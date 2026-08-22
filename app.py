@@ -1,15 +1,15 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
-import requests
 import io
 
 # =====================================================================
 # 1. 頁面配置
 # =====================================================================
 st.set_page_config(
-    page_title="QQQ & 17 Core Swing Engine (Tiingo)",
+    page_title="QQQ & 17 Core Swing Engine Pro",
     page_icon="🧭",
     layout="wide"
 )
@@ -22,77 +22,10 @@ DEFAULT_TICKERS = [
 ]
 
 # =====================================================================
-# 2. 側邊欄配置 (API KEY & 歷史時光機)
-# =====================================================================
-st.sidebar.title("🎛️ CONTROL CENTER")
-
-# 在此填入或在界面直接貼入 Tiingo API Token
-tiingo_token = st.sidebar.text_input(
-    "🔑 Tiingo API Token", 
-    value="", 
-    type="password",
-    help="請貼上你的 Tiingo API Key"
-)
-
-tickers_input = st.sidebar.text_area(
-    "監控資產池 (QQQ + 17 核心標的)",
-    value=", ".join(DEFAULT_TICKERS),
-    height=120
-)
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("⏳ PASS RECORD (歷史時光機)")
-audit_date = st.sidebar.date_input(
-    "選擇基準覆盤日期 (Target Date)",
-    value=datetime.date.today(),
-    max_value=datetime.date.today()
-)
-
-scan_btn = st.sidebar.button("🚀 執行全域掃描 (RUN SCAN)", type="primary")
-
-# =====================================================================
-# 3. Tiingo 數據抓取引擎
-# =====================================================================
-@st.cache_data(ttl=3600)
-def fetch_tiingo_data(ticker, start_str, end_str, token):
-    url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Token {token}'
-    }
-    params = {
-        'startDate': start_str,
-        'endDate': end_str,
-        'format': 'json'
-    }
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if not data:
-                return None
-            df = pd.DataFrame(data)
-            df['date'] = pd.to_datetime(df['date'])
-            df.set_index('date', inplace=True)
-            df.rename(columns={
-                'open': 'Open',
-                'high': 'High',
-                'low': 'Low',
-                'close': 'Close',
-                'volume': 'Volume'
-            }, inplace=True)
-            return df[['Open', 'High', 'Low', 'Close', 'Volume']].sort_index()
-        else:
-            return None
-    except Exception:
-        return None
-
-# =====================================================================
-# 4. Adam Grimes 雙箱體與量價判定核心
+# 2. 量化計算核心 (Adam Grimes + VPA + QQQ Magnitude Engine)
 # =====================================================================
 def calculate_grimes_levels(df):
-    if len(df) < 50:
+    if len(df) < 60:
         return None
     
     df = df.copy()
@@ -185,28 +118,56 @@ def calculate_grimes_levels(df):
     }
 
 # =====================================================================
-# 5. 主程序邏輯
+# 3. 側邊欄控制台
 # =====================================================================
-st.title("🧭 QQQ & 17 CORE ASSETS - SWING ENGINE (TIINGO)")
-st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo Official API")
+st.sidebar.title("🎛️ CONTROL CENTER")
 
-if not tiingo_token:
-    st.info("👈 請在左側輸入你的 **Tiingo API Token** 開始掃描。")
-    st.stop()
+tickers_input = st.sidebar.text_area(
+    "Asset Universe",
+    value=", ".join(DEFAULT_TICKERS),
+    height=130
+)
+tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-start_date_str = (audit_date - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
-end_date_str = audit_date.strftime('%Y-%m-%d')
+st.sidebar.markdown("---")
+st.sidebar.subheader("⏳ PASS RECORD (歷史時光機)")
+audit_date = st.sidebar.date_input(
+    "選擇基準計算日期 (Target Date)",
+    value=datetime.date.today(),
+    max_value=datetime.date.today()
+)
 
-all_data = {}
-with st.spinner("正在透過 Tiingo API 請求全資產數據..."):
-    for t in tickers:
-        df_stock = fetch_tiingo_data(t, start_date_str, end_date_str, tiingo_token)
-        if df_stock is not None and len(df_stock) >= 50:
-            all_data[t] = df_stock
+scan_btn = st.sidebar.button("🚀 執行全域掃描 (RUN SCAN)", type="primary")
+
+# =====================================================================
+# 4. 數據下載與清洗
+# =====================================================================
+st.title("🧭 QQQ & 17 CORE ASSETS - SWING ROTATION ENGINE")
+st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 框架: Adam Grimes Dual-Range + Breadth Magnitude")
+
+start_date = audit_date - datetime.timedelta(days=730)
+end_date = audit_date + datetime.timedelta(days=1)
+
+@st.cache_data(ttl=3600)
+def fetch_all_data(ticker_list, start, end):
+    data = {}
+    for t in ticker_list:
+        try:
+            df = yf.download(t, start=start, end=end, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            if len(df) > 0:
+                data[t] = df
+        except Exception as e:
+            st.error(f"下載 {t} 失敗: {e}")
+    return data
+
+with st.spinner("正在下載並清洗全資產池數據..."):
+    all_data = fetch_all_data(tickers, start_date, end_date)
 
 results = []
 for t in tickers:
-    if t in all_data:
+    if t in all_data and len(all_data[t]) >= 60:
         res = calculate_grimes_levels(all_data[t])
         if res:
             res["TICKER"] = t
@@ -215,10 +176,11 @@ for t in tickers:
 if results:
     df_res = pd.DataFrame(results)
     
-    # -------------------------------------------------------------
-    # 5.1 QQQ 空間與幅度預測儀 (MAGNITUDE ENGINE)
-    # -------------------------------------------------------------
+    # =================================================================
+    # 5. 🌟 QQQ 精確漲跌幅度與目標落地區 (MAGNITUDE ENGINE)
+    # =================================================================
     st.markdown("### 🎯 QQQ 大盤方向、漲跌幅度與目標落地區間")
+    
     qqq_data = df_res[df_res["TICKER"] == "QQQ"].iloc[0] if "QQQ" in df_res["TICKER"].values else None
     stock_rows = df_res[df_res["TICKER"] != "QQQ"]
     
@@ -227,6 +189,7 @@ if results:
         sbr_target = qqq_data["SBR_BOT"]
         rbs_target = qqq_data["RBS_TOP"]
         
+        # 漲跌幅度空間測算
         upside_pts = round(max(sbr_target - qqq_close, 0.0), 2)
         upside_pct = round((upside_pts / qqq_close) * 100, 2)
         
@@ -235,15 +198,20 @@ if results:
         
         rr_ratio = round(upside_pct / max(downside_pct, 0.1), 2)
         
+        # 綜合多空概率
         avg_score = stock_rows["SCORE"].mean()
         bull_prob = int(np.clip((avg_score + 1.0) / 2.0 * 100, 5, 95))
         bear_prob = 100 - bull_prob
         
+        # 寬度指標
         above_ema_cnt = sum(stock_rows["Close"] > stock_rows["EMA20"])
         total_stocks = len(stock_rows)
         breadth_pct = int(above_ema_cnt / total_stocks * 100)
+        
+        # 背離檢測
         divergence = (bull_prob >= 60) and (breadth_pct <= 35)
         
+        # 動態總持倉配置建議
         if divergence:
             rec_cash = "🛑 0% ~ 20% (頂部背離嚴重，強制防守)"
         elif bull_prob >= 65 and rr_ratio >= 1.5:
@@ -255,6 +223,7 @@ if results:
         else:
             rec_cash = "🟡 20% ~ 30% (多空撕裂，輕倉觀望)"
 
+        # 頂部 4 大核心卡片
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         with col_m1:
             st.metric("🟢 QQQ 看漲目標區 (SBR)", f"${sbr_target}", f"+{upside_pct}% (+${upside_pts})")
@@ -265,20 +234,21 @@ if results:
         with col_m4:
             st.metric("⚖️ 空間盈虧比 (R:R)", f"1 : {rr_ratio}", f"寬度: {breadth_pct}% 站上均線")
 
+        # 戰術決策橫幅
         if divergence:
-            st.error(f"🛑 **【嚴重警報：頂部背離】** 指數偏多，但 17 支權重股僅 {breadth_pct}% 站在 20 EMA 上！隨時面臨瀑布，嚴禁追高！")
+            st.error(f"🛑 **【嚴重警報：頂部背離 (DIVERGENCE)】** 指數表面偏多，但 17 支權重股僅 {breadth_pct}% 站在 20 EMA 上！做市商正在拉指數掩護出貨，隨時瀑布，嚴禁追高！")
         elif bull_prob >= 65 and rr_ratio >= 1.5:
-            st.success(f"🚀 **【戰術指令：大波段進攻】** 目標 **`${sbr_target}` (+{upside_pct}%)**，支撐 **`${rbs_target}`**。空間比 1:{rr_ratio}。**{rec_cash}**")
+            st.success(f"🚀 **【戰術指令：大波段進攻】** 目標直指 **`${sbr_target}` (+{upside_pct}%)**，回調底座 **`${rbs_target}`** 支撐極強。空間 R:R 為 1:{rr_ratio}。**{rec_cash}**")
         elif bear_prob >= 65:
-            st.error(f"🔴 **【戰術指令：空頭防守收割】** 預期回調至 **`${rbs_target}` (-{downside_pct}%)**。**{rec_cash}**")
+            st.error(f"🔴 **【戰術指令：空頭防守收割】** 預期回調至 **`${rbs_target}` (-{downside_pct}%)**。大面積股票進入派發區。**{rec_cash}**")
         else:
-            st.warning(f"🟡 **【戰術指令：多空僵持 / 看著辦】** 上漲 +{upside_pct}% vs 回調 -{downside_pct}%。**{rec_cash}**")
+            st.warning(f"🟡 **【戰術指令：多空僵持 / 看著辦】** 當前處於半空中震盪，上漲空間 +{upside_pct}% vs 回調空間 -{downside_pct}%。**{rec_cash}**")
 
     st.markdown("---")
 
-    # -------------------------------------------------------------
-    # 5.2 全域量化看板 (RADAR VIEW)
-    # -------------------------------------------------------------
+    # =================================================================
+    # 6. 全域看板視圖 (RADAR VIEW)
+    # =================================================================
     st.subheader("📊 17 支核心資產 + QQQ 全域量化看板")
     cols = ["TICKER", "STATUS", "Close", "EMA20", "RBS_BOT", "RBS_TOP", "SBR_BOT", "SBR_TOP", "RVOL", "ATR20"]
     st.dataframe(
@@ -293,9 +263,9 @@ if results:
         height=500
     )
 
-    # -------------------------------------------------------------
-    # 5.3 EXCEL 下載
-    # -------------------------------------------------------------
+    # =================================================================
+    # 7. EXCEL 報告導出
+    # =================================================================
     col_dl1, col_dl2 = st.columns([2, 8])
     with col_dl1:
         output = io.BytesIO()
@@ -304,29 +274,29 @@ if results:
         excel_data = output.getvalue()
         
         st.download_button(
-            label="📥 下載 EXCEL 完整報告 (.xlsx)",
+            label="📥 下載 EXCEL 完整量化報告 (.xlsx)",
             data=excel_data,
-            file_name=f"Tiingo_Swing_Report_{audit_date.strftime('%Y%m%d')}.xlsx",
+            file_name=f"QQQ_Swing_Report_{audit_date.strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # -------------------------------------------------------------
-    # 5.4 富途參數一鍵複製座艙
-    # -------------------------------------------------------------
+    # =================================================================
+    # 8. 單股 / QQQ 富途參數複製座艙
+    # =================================================================
     st.markdown("---")
     st.subheader("🎯 單股 / QQQ 富途參數複製座艙")
     
-    selected_stock = st.selectbox("選擇要複製代碼的標的:", tickers, index=0)
+    selected_stock = st.selectbox("選擇要查看或複製代碼的標的 (SELECT ASSET):", tickers, index=0)
     stock_data = df_res[df_res["TICKER"] == selected_stock].iloc[0]
     
     col_c1, col_c2 = st.columns([1, 1])
     with col_c1:
         st.markdown(f"#### 【{selected_stock}】 結構數據")
-        st.markdown(f"* **狀態:** `{stock_data['STATUS']}`")
-        st.markdown(f"* **最新價:** `${stock_data['Close']}` | **20 EMA:** `${stock_data['EMA20']}`")
-        st.markdown(f"* **🟢 底部 RBS 箱體:** `${stock_data['RBS_BOT']} ~ ${stock_data['RBS_TOP']}`")
-        st.markdown(f"* **🔴 頂部 SBR 箱體:** `${stock_data['SBR_BOT']} ~ ${stock_data['SBR_TOP']}`")
-        st.markdown(f"* **RVOL:** `{stock_data['RVOL']}x`")
+        st.markdown(f"* **當前狀態 (STATUS):** `{stock_data['STATUS']}`")
+        st.markdown(f"* **收盤價 (CLOSE):** `${stock_data['Close']}` | **20 EMA:** `${stock_data['EMA20']}`")
+        st.markdown(f"* **🟢 底部買盤箱體 (RBS):** `${stock_data['RBS_BOT']} ~ ${stock_data['RBS_TOP']}`")
+        st.markdown(f"* **🔴 頂部阻力箱體 (SBR):** `${stock_data['SBR_BOT']} ~ ${stock_data['SBR_TOP']}`")
+        st.markdown(f"* **相對成交量 (RVOL):** `{stock_data['RVOL']}x`")
         
     with col_c2:
         st.markdown("#### 📋 複製到富途指標前 4 行 (點擊右上角複製)")
@@ -337,13 +307,13 @@ RBS_TOP := {stock_data['RBS_TOP']:.2f};  {{ 底部買盤箱體頂沿 }}
 RBS_BOT := {stock_data['RBS_BOT']:.2f};  {{ 底部買盤箱體底沿 }}"""
         st.code(futu_code, language="pascal")
 
-    # -------------------------------------------------------------
-    # 5.5 歷史 K 線明細
-    # -------------------------------------------------------------
-    with st.expander(f"🔍 查看 {selected_stock} 歷史行情明細"):
+    # =================================================================
+    # 9. 歷史軌跡日誌
+    # =================================================================
+    with st.expander(f"🔍 展開查看 {selected_stock} 過去 30 個交易日的行情記錄"):
         hist_df = all_data[selected_stock].tail(30).copy()
         hist_df['EMA20'] = hist_df['Close'].ewm(span=20, adjust=False).mean()
-        st.dataframe(hist_df.round(2).sort_index(ascending=False), use_container_width=True)
+        st.dataframe(hist_df[['Open', 'High', 'Low', 'Close', 'Volume', 'EMA20']].round(2).sort_index(ascending=False), use_container_width=True)
 
 else:
-    st.error("⚠️ 未獲取到數據，請檢查 Tiingo Token 是否正確或配額是否充足。")
+    st.warning("數據載入中或未檢索到數據，請確認網絡連接。")
