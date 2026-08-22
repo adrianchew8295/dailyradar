@@ -84,7 +84,7 @@ def fetch_tiingo_data(ticker, start_str, end_str, token):
         return None
 
 # =====================================================================
-# 4. Adam Grimes 雙箱體與量價判定核心
+# 4. Adam Grimes 宏觀寬幅雙箱體計算核心 (修正厚度)
 # =====================================================================
 def calculate_grimes_levels(df):
     if len(df) < 50:
@@ -119,21 +119,23 @@ def calculate_grimes_levels(df):
     latest_atr = df['ATR20'].iloc[-1]
     latest_close = df['Close'].iloc[-1]
     
+    # 宏觀頂部 SBR 箱體 (厚度約 2.0x ATR，具備真實派發帶寬度)
     if pivot_highs:
         major_high = max(pivot_highs)
     else:
         major_high = df['High'].iloc[-60:].max()
         
-    sbr_top = round(float(major_high + 0.25 * latest_atr), 2)
-    sbr_bot = round(float(major_high - 0.50 * latest_atr), 2)
+    sbr_top = round(float(major_high + 0.50 * latest_atr), 2)
+    sbr_bot = round(float(major_high - 1.50 * latest_atr), 2)
     
+    # 宏觀底部 RBS 箱體 (厚度約 2.0x ATR，具備真實機構吸籌帶寬度)
     if pivot_lows:
         major_low = min(pivot_lows[-3:]) if len(pivot_lows) >= 3 else min(pivot_lows)
     else:
         major_low = df['Low'].iloc[-60:].min()
         
-    rbs_top = round(float(major_low + 0.50 * latest_atr), 2)
-    rbs_bot = round(float(major_low - 0.25 * latest_atr), 2)
+    rbs_top = round(float(major_low + 1.50 * latest_atr), 2)
+    rbs_bot = round(float(major_low - 0.50 * latest_atr), 2)
     
     latest_vol = df['Volume'].iloc[-1]
     latest_vol_ma = df['VOL_MA20'].iloc[-1]
@@ -143,6 +145,7 @@ def calculate_grimes_levels(df):
     latest_open = df['Open'].iloc[-1]
     latest_ema20 = df['EMA20'].iloc[-1]
     
+    # 狀態機判定
     in_rbs = (df['Low'].iloc[-5:].min() <= rbs_top) and (latest_close >= rbs_bot)
     reclaimed_ema = (latest_close > latest_ema20) and (prev_close <= df['EMA20'].iloc[-2])
     is_bull = latest_close > latest_open
@@ -183,7 +186,7 @@ def calculate_grimes_levels(df):
 # 5. 主程序邏輯
 # =====================================================================
 st.title("🧭 QQQ & 17 CORE ASSETS - SWING ENGINE")
-st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo Official API")
+st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo Official API (宏觀寬幅版)")
 
 start_date_str = (audit_date - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
 end_date_str = audit_date.strftime('%Y-%m-%d')
