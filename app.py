@@ -265,20 +265,27 @@ if results:
 
     st.markdown("---")
 
-    # 5.2 全域量化看板
+    # 5.2 全域量化看板 (兼容新舊版 Pandas 著色)
     st.subheader("📊 17 支核心資產 + QQQ 全域量化看板")
     cols = ["TICKER", "STATUS", "Close", "EMA20", "RBS_BOT", "RBS_TOP", "SBR_BOT", "SBR_TOP", "RVOL", "ATR20"]
-    st.dataframe(
-        df_res[cols].style.applymap(
-            lambda v: "background-color: #1b4332; color: #d8f3dc; font-weight: bold;" if "BUY" in str(v)
-            else "background-color: #5c4d00; color: #fff3b0;" if "RBS" in str(v)
-            else "background-color: #49111c; color: #ffccd5;" if "SBR" in str(v)
-            else "",
-            subset=["STATUS"]
-        ),
-        use_container_width=True,
-        height=500
-    )
+    
+    def highlight_status(val):
+        s = str(val)
+        if "BUY" in s:
+            return "background-color: #1b4332; color: #d8f3dc; font-weight: bold;"
+        elif "RBS" in s:
+            return "background-color: #5c4d00; color: #fff3b0;"
+        elif "SBR" in s:
+            return "background-color: #49111c; color: #ffccd5;"
+        return ""
+
+    styler = df_res[cols].style
+    if hasattr(styler, 'map'):
+        styled_df = styler.map(highlight_status, subset=["STATUS"])
+    else:
+        styled_df = styler.applymap(highlight_status, subset=["STATUS"])
+        
+    st.dataframe(styled_df, use_container_width=True, height=500)
 
     # 5.3 EXCEL 下載
     col_dl1, col_dl2 = st.columns([2, 8])
