@@ -14,7 +14,7 @@ import yfinance as yf
 TIINGO_TOKEN = "bcffe3a5cf7eeef085e405cfa4a3e5691b976217"
 
 st.set_page_config(
-    page_title="QQQ & 17 Core Swing Engine (Pure Structure Zero-Parameter)",
+    page_title="QQQ & 17 Core Swing Engine (Pure Structure)",
     page_icon="🧭",
     layout="wide"
 )
@@ -109,7 +109,7 @@ def fetch_1h_data(ticker, token):
     return None, "Failed"
 
 # =====================================================================
-# 5. 纯客观 K 线结构解析 (Candlestick Geometry: 无任何 ATR 乘数调节)
+# 5. 纯客观 K 线结构解析 (已彻底修复 Series 比对 Bug)
 # =====================================================================
 def calculate_pure_structure_levels(df):
     if len(df) < 20:
@@ -117,7 +117,7 @@ def calculate_pure_structure_levels(df):
     
     df = df.copy()
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    latest_close = df['Close'].iloc[-1]
+    latest_close = float(df['Close'].iloc[-1])
     
     # 局部 40 根 1H K 线寻找局部高低拐点
     subset = df.iloc[-40:].copy()
@@ -133,34 +133,34 @@ def calculate_pure_structure_levels(df):
     for i in range(2, len(subset) - 2):
         # 浪尖阻力拐点
         if highs[i] == max(highs[i-2:i+3]):
-            top_val = highs[i]
-            # 实体顶沿作为阻力底沿 (密集筹码换手区)
-            bot_val = max(opens[i], closes[i])
+            top_val = float(highs[i])
+            bot_val = float(max(opens[i], closes[i]))
             if top_val > latest_close:
                 pivots_high_list.append((top_val, bot_val))
                 
         # 浪底支撑拐点
         if lows[i] == min(lows[i-2:i+3]):
-            bot_val = lows[i]
-            # 实体底沿作为支撑顶沿 (机构挂单吸筹区)
-            top_val = min(opens[i], closes[i])
+            bot_val = float(lows[i])
+            top_val = float(min(opens[i], closes[i]))
             if bot_val < latest_close:
                 pivots_low_list.append((top_val, bot_val))
                 
-    # 提取离当前价格最近的真实供需带
+    # 提取离当前价格最近的真实供需带 (使用 numpy 逐元素最大/最小修复 bug)
     if pivots_high_list:
-        pivots_high_list.sort(key=lambda x: x[0])  # 升序，取最近的上方阻力
+        pivots_high_list.sort(key=lambda x: x[0])  # 取最靠近现价上方的阻力
         sbr_top, sbr_bot = pivots_high_list[0]
     else:
         sbr_top = float(subset['High'].max())
-        sbr_bot = float(max(subset['Open'].iloc[-5:], subset['Close'].iloc[-5:]).max())
+        body_top_series = np.maximum(subset['Open'].iloc[-5:].values, subset['Close'].iloc[-5:].values)
+        sbr_bot = float(body_top_series.max())
         
     if pivots_low_list:
-        pivots_low_list.sort(key=lambda x: x[1], reverse=True)  # 降序，取最近的下方支撑
+        pivots_low_list.sort(key=lambda x: x[1], reverse=True)  # 取最靠近现价下方的支撑
         rbs_top, rbs_bot = pivots_low_list[0]
     else:
         rbs_bot = float(subset['Low'].min())
-        rbs_top = float(min(subset['Open'].iloc[-5:], subset['Close'].iloc[-5:]).min())
+        body_bot_series = np.minimum(subset['Open'].iloc[-5:].values, subset['Close'].iloc[-5:].values)
+        rbs_top = float(body_bot_series.min())
         
     # 硬事实昨日与盘前极值
     pdh_val = round(float(subset['High'].iloc[-14:-7].max()), 2) if len(subset) >= 14 else round(float(subset['High'].max()), 2)
@@ -168,10 +168,10 @@ def calculate_pure_structure_levels(df):
     pmh_val = round(float(subset['High'].iloc[-4:].max()), 2)
     pml_val = round(float(subset['Low'].iloc[-4:].min()), 2)
     
-    trend_bias = 1 if latest_close > df['EMA20'].iloc[-1] else -1
+    trend_bias = 1 if latest_close > float(df['EMA20'].iloc[-1]) else -1
     
     return {
-        "Close": round(float(latest_close), 2),
+        "Close": round(latest_close, 2),
         "EMA20": round(float(df['EMA20'].iloc[-1]), 2),
         "TREND_BIAS": trend_bias,
         "SBR_TOP": round(float(sbr_top), 2),
@@ -188,7 +188,7 @@ def calculate_pure_structure_levels(df):
 # 6. 渲染界面与一键复制座舱
 # =====================================================================
 st.title("🧭 QQQ & 17 CORE ASSETS (PURE CANDLESTICK GEOMETRY)")
-st.caption("基于真实 K 线影线与实体边界推导 | 零人工调节参数 | 100% 客观结构")
+st.caption("基于真实 1H K 线影线与实体边界推导 | 零人工调节参数 | 100% 客观结构")
 
 all_data = {}
 source_track = {}
@@ -219,8 +219,8 @@ if results:
     with col_c1:
         st.markdown(f"#### 【{selected_stock}】 真实蜡烛几何战区")
         st.markdown(f"* **最新现价:** `${stock_data['Close']}`")
-        st.markdown(f"* **🔴 1H SBR 阻力带 (实体到影线尖):** `${stock_data['SBR_BOT']} ~ ${stock_data['SBR_TOP']}` (跨度 {round(stock_data['SBR_TOP'] - stock_data['SBR_BOT'], 2)} 点)")
-        st.markdown(f"* **🟢 1H RBS 支撑带 (实体到影线尖):** `${stock_data['RBS_BOT']} ~ ${stock_data['RBS_TOP']}` (跨度 {round(stock_data['RBS_TOP'] - stock_data['RBS_BOT'], 2)} 点)")
+        st.markdown(f"* **🔴 1H SBR 阻力带 (实体上沿至最高影线):** `${stock_data['SBR_BOT']} ~ ${stock_data['SBR_TOP']}` (跨度 {round(stock_data['SBR_TOP'] - stock_data['SBR_BOT'], 2)} 点)")
+        st.markdown(f"* **🟢 1H RBS 支撑带 (最低影线至实体下沿):** `${stock_data['RBS_BOT']} ~ ${stock_data['RBS_TOP']}` (跨度 {round(stock_data['RBS_TOP'] - stock_data['RBS_BOT'], 2)} 点)")
         st.markdown(f"* **📌 昨日极值 (PDL / PDH):** `${stock_data['PDL']} ~ ${stock_data['PDH']}`")
         st.markdown(f"* **🕒 盘前极值 (PML / PMH):** `${stock_data['PML']} ~ ${stock_data['PMH']}`")
         
