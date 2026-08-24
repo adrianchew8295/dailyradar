@@ -1,9 +1,11 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import datetime
-import requests
 import io
+import datetime
+from datetime import timedelta
+import numpy as np
+import pandas as pd
+import pytz
+import requests
+import streamlit as st
 
 # =====================================================================
 # 1. 核心憑證與資產配置 (已自動綁定 TIINGO TOKEN)
@@ -24,7 +26,36 @@ DEFAULT_TICKERS = [
 ]
 
 # =====================================================================
-# 2. 側邊欄配置
+# 2. 人性化時間與倒計時引擎 (大馬時間 MYT & 美東時間 ET)
+# =====================================================================
+tz_myt = pytz.timezone("Asia/Kuala_Lumpur")
+tz_ny = pytz.timezone("America/New_York")
+
+now_myt = datetime.datetime.now(tz_myt)
+now_ny = datetime.datetime.now(tz_ny)
+
+target_open_ny = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
+if now_ny >= target_open_ny and now_ny.hour >= 16:
+    target_open_ny += timedelta(days=1)
+while target_open_ny.weekday() >= 5:  # 跳過週末
+    target_open_ny += timedelta(days=1)
+
+target_open_myt = target_open_ny.astimezone(tz_myt)
+time_to_open = target_open_myt - now_myt
+
+c_t1, c_t2, c_t3 = st.columns([1.5, 1.5, 2])
+c_t1.info(f"🕒 **大馬時間 (MYT):** {now_myt.strftime('%Y-%m-%d %H:%M:%S')}")
+c_t2.info(f"🇺🇸 **美東時間 (ET):** {now_ny.strftime('%Y-%m-%d %H:%M:%S')}")
+
+if 0 <= time_to_open.total_seconds() <= 86400:
+    hours, remainder = divmod(int(time_to_open.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    c_t3.warning(f"⏳ **距離今晚開盤倒計時:** {hours}小時 {minutes}分 {seconds}秒")
+else:
+    c_t3.success("🟢 **美股交易中 / 盤後覆盤階段**")
+
+# =====================================================================
+# 3. 側邊欄配置
 # =====================================================================
 st.sidebar.title("🎛️ CONTROL CENTER")
 st.sidebar.success("🔑 Tiingo API 連線就緒")
@@ -47,7 +78,7 @@ audit_date = st.sidebar.date_input(
 scan_btn = st.sidebar.button("🚀 執行全域掃描 (RUN SCAN)", type="primary")
 
 # =====================================================================
-# 3. Tiingo 數據抓取引擎
+# 4. Tiingo 數據抓取引擎
 # =====================================================================
 @st.cache_data(ttl=3600)
 def fetch_tiingo_data(ticker, start_str, end_str, token):
@@ -83,8 +114,13 @@ def fetch_tiingo_data(ticker, start_str, end_str, token):
     except Exception:
         return None
 
+def calculate_lwma(series: pd.Series, period: int) -> pd.Series:
+    """計算 200 LWMA"""
+    weights = np.arange(1, period + 1)
+    return series.rolling(period).apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
+
 # =====================================================================
-# 4. Adam Grimes 宏觀寬幅雙箱體計算核心 (修正厚度)
+# 5. Adam Grimes 宏觀寬幅雙箱體與 5M 對接核心
 # =====================================================================
 def calculate_grimes_levels(df):
     if len(df) < 50:
@@ -93,6 +129,7 @@ def calculate_grimes_levels(df):
     df = df.copy()
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['SMA200'] = df['Close'].rolling(window=200).mean()
+    df['LWMA200'] = calculate_lwma(df['Close'], min(200, len(df)))
     
     df['TR'] = np.maximum(
         df['High'] - df['Low'],
@@ -119,7 +156,19 @@ def calculate_grimes_levels(df):
     latest_atr = df['ATR20'].iloc[-1]
     latest_close = df['Close'].iloc[-1]
     
-    # 宏觀頂部 SBR 箱體 (厚度約 2.0x ATR，具備真實派發帶寬度)
+    # 昨日極值 (PDH / PDL)
+    if len(df) >= 2:
+        pdh_val = round(float(df['High'].iloc[-2]), 2)
+        pdl_val = round(float(df['Low'].iloc[-2]), 2)
+    else:
+        pdh_val = round(float(df['High'].iloc[-1]), 2)
+        pdl_val = round(float(df['Low'].iloc[-1]), 2)
+        
+    # 盤前通道估算 (PMH / PML)
+    pmh_val = round(float(latest_close + 0.5 * latest_atr), 2)
+    pml_val = round(float(latest_close - 0.5 * latest_atr), 2)
+    
+    # 宏觀頂部 SBR 箱體 (厚度約 2.0x ATR)
     if pivot_highs:
         major_high = max(pivot_highs)
     else:
@@ -128,7 +177,7 @@ def calculate_grimes_levels(df):
     sbr_top = round(float(major_high + 0.50 * latest_atr), 2)
     sbr_bot = round(float(major_high - 1.50 * latest_atr), 2)
     
-    # 宏觀底部 RBS 箱體 (厚度約 2.0x ATR，具備真實機構吸籌帶寬度)
+    # 宏觀底部 RBS 箱體 (厚度約 2.0x ATR)
     if pivot_lows:
         major_low = min(pivot_lows[-3:]) if len(pivot_lows) >= 3 else min(pivot_lows)
     else:
@@ -144,6 +193,13 @@ def calculate_grimes_levels(df):
     prev_close = df['Close'].iloc[-2]
     latest_open = df['Open'].iloc[-1]
     latest_ema20 = df['EMA20'].iloc[-1]
+    latest_lwma200 = df['LWMA200'].iloc[-1]
+    
+    # 宏觀偏向 (TREND_BIAS)
+    if not np.isnan(latest_lwma200):
+        trend_bias = 1 if latest_close > latest_lwma200 else -1
+    else:
+        trend_bias = 0
     
     # 狀態機判定
     in_rbs = (df['Low'].iloc[-5:].min() <= rbs_top) and (latest_close >= rbs_bot)
@@ -172,10 +228,16 @@ def calculate_grimes_levels(df):
     return {
         "Close": round(float(latest_close), 2),
         "EMA20": round(float(latest_ema20), 2),
+        "LWMA200": round(float(latest_lwma200), 2) if not np.isnan(latest_lwma200) else 0.0,
+        "TREND_BIAS": trend_bias,
         "SBR_TOP": sbr_top,
         "SBR_BOT": sbr_bot,
         "RBS_TOP": rbs_top,
         "RBS_BOT": rbs_bot,
+        "PDH": pdh_val,
+        "PDL": pdl_val,
+        "PMH": pmh_val,
+        "PML": pml_val,
         "RVOL": rvol,
         "STATUS": status,
         "ATR20": round(float(latest_atr), 2),
@@ -183,10 +245,10 @@ def calculate_grimes_levels(df):
     }
 
 # =====================================================================
-# 5. 主程序邏輯
+# 6. 主程序邏輯
 # =====================================================================
 st.title("🧭 QQQ & 17 CORE ASSETS - SWING ENGINE")
-st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo Official API (宏觀寬幅版)")
+st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo Official API (宏觀寬幅 + 5M 參數聯動版)")
 
 start_date_str = (audit_date - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
 end_date_str = audit_date.strftime('%Y-%m-%d')
@@ -209,7 +271,7 @@ for t in tickers:
 if results:
     df_res = pd.DataFrame(results)
     
-    # 5.1 QQQ 幅度預測
+    # 6.1 QQQ 幅度預測與市場寬度
     st.markdown("### 🎯 QQQ 大盤方向、漲跌幅度與目標落地區間")
     qqq_data = df_res[df_res["TICKER"] == "QQQ"].iloc[0] if "QQQ" in df_res["TICKER"].values else None
     stock_rows = df_res[df_res["TICKER"] != "QQQ"]
@@ -268,9 +330,9 @@ if results:
 
     st.markdown("---")
 
-    # 5.2 全域量化看板 (兼容新舊版 Pandas 著色)
+    # 6.2 全域量化看板 (兼容新舊版 Pandas 著色)
     st.subheader("📊 17 支核心資產 + QQQ 全域量化看板")
-    cols = ["TICKER", "STATUS", "Close", "EMA20", "RBS_BOT", "RBS_TOP", "SBR_BOT", "SBR_TOP", "RVOL", "ATR20"]
+    cols = ["TICKER", "STATUS", "Close", "EMA20", "RBS_BOT", "RBS_TOP", "SBR_BOT", "SBR_TOP", "PDL", "PDH", "RVOL", "ATR20"]
     
     def highlight_status(val):
         s = str(val)
@@ -290,7 +352,7 @@ if results:
         
     st.dataframe(styled_df, use_container_width=True, height=500)
 
-    # 5.3 EXCEL 下載
+    # 6.3 EXCEL 下載
     col_dl1, col_dl2 = st.columns([2, 8])
     with col_dl1:
         output = io.BytesIO()
@@ -305,9 +367,9 @@ if results:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # 5.4 富途參數一鍵複製座艙
+    # 6.4 富途 5M 參數一鍵複製座艙 (完整 9 行對齊)
     st.markdown("---")
-    st.subheader("🎯 單股 / QQQ 富途參數複製座艙")
+    st.subheader("🎯 單股 / QQQ 富途 5M 指標參數複製座艙")
     
     selected_stock = st.selectbox("選擇要複製代碼的標的:", tickers, index=0)
     stock_data = df_res[df_res["TICKER"] == selected_stock].iloc[0]
@@ -319,18 +381,23 @@ if results:
         st.markdown(f"* **最新價:** `${stock_data['Close']}` | **20 EMA:** `${stock_data['EMA20']}`")
         st.markdown(f"* **🟢 底部 RBS 箱體:** `${stock_data['RBS_BOT']} ~ ${stock_data['RBS_TOP']}`")
         st.markdown(f"* **🔴 頂部 SBR 箱體:** `${stock_data['SBR_BOT']} ~ ${stock_data['SBR_TOP']}`")
+        st.markdown(f"* **📌 昨日極值 (PDL / PDH):** `${stock_data['PDL']} ~ ${stock_data['PDH']}`")
         st.markdown(f"* **RVOL:** `{stock_data['RVOL']}x`")
         
     with col_c2:
-        st.markdown("#### 📋 複製到富途指標前 4 行 (點擊右上角複製)")
-        futu_code = f"""SBR_TOP := {stock_data['SBR_TOP']:.2f};  {{ 頂部阻力箱體頂沿 }}
-SBR_BOT := {stock_data['SBR_BOT']:.2f};  {{ 頂部阻力箱體底沿 }}
-
-RBS_TOP := {stock_data['RBS_TOP']:.2f};  {{ 底部買盤箱體頂沿 }}
-RBS_BOT := {stock_data['RBS_BOT']:.2f};  {{ 底部買盤箱體底沿 }}"""
+        st.markdown("#### 📋 複製到富途 5M 指標頂部 9 行參數 (點擊右上角複製)")
+        futu_code = f"""TREND_BIAS := {int(stock_data['TREND_BIAS'])};       {{ 宏觀偏向: 1=多, -1=空, 0=中立 }}
+SBR_TOP    := {stock_data['SBR_TOP']:.2f};   {{ 1H 阻力頂沿 }}
+SBR_BOT    := {stock_data['SBR_BOT']:.2f};   {{ 1H 阻力底沿 }}
+RBS_TOP    := {stock_data['RBS_TOP']:.2f};   {{ 1H 支撑頂沿 }}
+RBS_BOT    := {stock_data['RBS_BOT']:.2f};   {{ 1H 支撑底沿 }}
+PDH_LINE   := {stock_data['PDH']:.2f};   {{ 昨日最高價 PDH }}
+PDL_LINE   := {stock_data['PDL']:.2f};   {{ 昨日最低價 PDL }}
+PMH_LINE   := {stock_data['PMH']:.2f};   {{ 盤前最高價 PMH }}
+PML_LINE   := {stock_data['PML']:.2f};   {{ 盤前最低價 PML }}"""
         st.code(futu_code, language="pascal")
 
-    # 5.5 歷史明細
+    # 6.5 歷史明細
     with st.expander(f"🔍 查看 {selected_stock} 歷史行情明細"):
         hist_df = all_data[selected_stock].tail(30).copy()
         hist_df['EMA20'] = hist_df['Close'].ewm(span=20, adjust=False).mean()
