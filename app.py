@@ -9,12 +9,12 @@ import streamlit as st
 import yfinance as yf
 
 # =====================================================================
-# 1. 核心憑證與資產配置
+# 1. 核心凭证与配置
 # =====================================================================
 TIINGO_TOKEN = "bcffe3a5cf7eeef085e405cfa4a3e5691b976217"
 
 st.set_page_config(
-    page_title="QQQ & 17 Core Swing Engine",
+    page_title="QQQ & 17 Core Swing Engine (Dynamic Auto-ATR)",
     page_icon="🧭",
     layout="wide"
 )
@@ -27,7 +27,7 @@ DEFAULT_TICKERS = [
 ]
 
 # =====================================================================
-# 2. 人性化時間與倒計時引擎
+# 2. 人性化时间与倒计时引擎
 # =====================================================================
 tz_myt = pytz.timezone("Asia/Kuala_Lumpur")
 tz_ny = pytz.timezone("America/New_York")
@@ -45,100 +45,117 @@ target_open_myt = target_open_ny.astimezone(tz_myt)
 time_to_open = target_open_myt - now_myt
 
 c_t1, c_t2, c_t3 = st.columns([1.5, 1.5, 2])
-c_t1.info(f"🕒 **大馬時間 (MYT):** {now_myt.strftime('%Y-%m-%d %H:%M:%S')}")
-c_t2.info(f"🇺🇸 **美東時間 (ET):** {now_ny.strftime('%Y-%m-%d %H:%M:%S')}")
+c_t1.info(f"🕒 **大马时间 (MYT):** {now_myt.strftime('%Y-%m-%d %H:%M:%S')}")
+c_t2.info(f"🇺🇸 **美东时间 (ET):** {now_ny.strftime('%Y-%m-%d %H:%M:%S')}")
 
 if 0 <= time_to_open.total_seconds() <= 86400:
     hours, remainder = divmod(int(time_to_open.total_seconds()), 3600)
     minutes, seconds = divmod(remainder, 60)
-    c_t3.warning(f"⏳ **距離今晚開盤倒計時:** {hours}小時 {minutes}分 {seconds}秒")
+    c_t3.warning(f"⏳ **距离今晚开盘倒计时:** {hours}小时 {minutes}分 {seconds}秒")
 else:
-    c_t3.success("🟢 **美股交易中 / 盤後覆盤階段**")
+    c_t3.success("🟢 **美股交易中 / 盘后复盘阶段**")
 
 # =====================================================================
-# 3. 側邊欄配置
+# 3. 侧边栏配置 (ATR 模式选择与手动微调)
 # =====================================================================
 st.sidebar.title("🎛️ CONTROL CENTER")
-st.sidebar.success("🛡️ 雙模數據引擎就緒 (Tiingo + yfinance)")
+
+atr_mode = st.sidebar.radio(
+    "ATR 战区厚度算法模式",
+    ["🤖 自动智能推荐 (Auto Suggested)", "🖐️ 全局手动锁定 (Manual)"],
+    index=0
+)
+
+manual_atr_mult = 0.18
+if atr_mode == "🖐️ 全局手动锁定 (Manual)":
+    manual_atr_mult = st.sidebar.slider(
+        "手动战区厚度 (ATR 倍数)",
+        min_value=0.05,
+        max_value=0.50,
+        value=0.18,
+        step=0.01,
+        help="QQQ 建议 0.18，个股建议 0.25~0.35"
+    )
 
 tickers_input = st.sidebar.text_area(
-    "監控資產池 (QQQ + 17 核心標的)",
+    "监控资产池 (QQQ + 17 核心标的)",
     value=", ".join(DEFAULT_TICKERS),
     height=120
 )
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("⏳ PASS RECORD (歷史時光機)")
-audit_date = st.sidebar.date_input(
-    "選擇基準覆盤日期 (Target Date)",
-    value=datetime.date.today(),
-    max_value=datetime.date.today()
-)
-
-btn_clear = st.sidebar.button("🧹 清除緩存並強制刷新", type="secondary")
+btn_clear = st.sidebar.button("🧹 清除缓存并强制刷新", type="secondary")
 if btn_clear:
     st.cache_data.clear()
     st.rerun()
 
-scan_btn = st.sidebar.button("🚀 執行全域掃描 (RUN SCAN)", type="primary")
-
 # =====================================================================
-# 4. 雙模數據抓取引擎 (Tiingo 優先，429 自動切換 yfinance)
+# 4. 1-Hour 数据抓取引擎 (Tiingo 1H 优先 + yfinance 1H 兜底)
 # =====================================================================
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_market_data(ticker, start_str, token):
-    # 第一步: 嘗試 Tiingo
-    url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices?startDate={start_str}&token={token}"
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_1h_data(ticker, token):
+    start_date = (datetime.datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    url = f"https://api.tiingo.com/iex/{ticker}/prices?startDate={start_date}&resampleFreq=1hour&token={token}&columns=open,high,low,close,volume"
     headers = {'Content-Type': 'application/json'}
     try:
-        response = requests.get(url, headers=headers, timeout=8)
-        if response.status_code == 200:
-            data = response.json()
-            if data and isinstance(data, list) and len(data) > 0:
+        resp = requests.get(url, headers=headers, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and isinstance(data, list) and len(data) >= 20:
                 df = pd.DataFrame(data)
-                if 'date' in df.columns and not df.empty:
-                    df['date'] = pd.to_datetime(df['date'])
-                    df.set_index('date', inplace=True)
-                    df.rename(columns={
-                        'open': 'Open', 'high': 'High', 'low': 'Low',
-                        'close': 'Close', 'volume': 'Volume'
-                    }, inplace=True)
-                    return df[['Open', 'High', 'Low', 'Close', 'Volume']].sort_index(), "Tiingo"
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace=True)
+                df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+                return df[['Open', 'High', 'Low', 'Close', 'Volume']].sort_index(), "Tiingo 1H"
     except Exception:
         pass
 
-    # 第二步: Tiingo 失敗或限流 429 時，自動無縫切換 yfinance
     try:
-        df_yf = yf.download(ticker, start=start_str, progress=False)
+        df_yf = yf.download(ticker, period="1mo", interval="1h", progress=False)
         if df_yf is not None and not df_yf.empty:
             if isinstance(df_yf.columns, pd.MultiIndex):
                 df_yf.columns = df_yf.columns.get_level_values(0)
             df_yf = df_yf[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
             df_yf.index = pd.to_datetime(df_yf.index)
-            if len(df_yf) >= 30:
-                return df_yf.sort_index(), "YahooFinance(容錯兜底)"
+            if len(df_yf) >= 20:
+                return df_yf.sort_index(), "yfinance 1H"
     except Exception:
         pass
 
-    return None, "All Sources Failed"
-
-def calculate_lwma(series: pd.Series, period: int) -> pd.Series:
-    weights = np.arange(1, period + 1)
-    return series.rolling(period).apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
+    return None, "Failed"
 
 # =====================================================================
-# 5. Adam Grimes 宏觀雙箱體與 5M 對接核心
+# 5. 自动建议 ATR 算法与 1H 战区计算核心
 # =====================================================================
-def calculate_grimes_levels(df):
-    if len(df) < 50:
+def get_suggested_atr_mult(ticker: str, atr_val: float, close_price: float) -> float:
+    """
+    智能建议 ATR 算法 (Fact + Logic):
+    1. ETF / 宽基指数 (QQQ): 波动平缓 -> 建议 0.18
+    2. 高波动 / 高 Beta 妖股 (NVDA, TSLA, ARM, PLTR, AMD): -> 建议 0.28 ~ 0.32
+    3. 相对平稳权重股 (AAPL, MSFT, GOOGL): -> 建议 0.22 ~ 0.25
+    4. 自适应波动率补充: 按 1H ATR 占现价百分比自适应修正
+    """
+    if ticker in ["QQQ", "SPY", "IWM", "DIA"]:
+        return 0.18
+    elif ticker in ["NVDA", "TSLA", "ARM", "PLTR", "AMD", "MU"]:
+        return 0.30
+    elif ticker in ["AAPL", "MSFT", "GOOGL", "META", "AMZN"]:
+        return 0.24
+    else:
+        # 自适应估算: 波动率高则宽，波动率低则窄
+        pct_atr = (atr_val / max(close_price, 1.0)) * 100
+        if pct_atr > 1.2:
+            return 0.30
+        elif pct_atr < 0.6:
+            return 0.18
+        else:
+            return 0.25
+
+def calculate_1h_levels(df, ticker: str, mode: str, manual_mult: float):
+    if len(df) < 20:
         return None
     
     df = df.copy()
-    df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    df['SMA200'] = df['Close'].rolling(window=200).mean()
-    df['LWMA200'] = calculate_lwma(df['Close'], min(200, len(df)))
-    
     df['TR'] = np.maximum(
         df['High'] - df['Low'],
         np.maximum(
@@ -146,11 +163,18 @@ def calculate_grimes_levels(df):
             (df['Low'] - df['Close'].shift(1)).abs()
         )
     )
-    df['ATR20'] = df['TR'].rolling(window=20).mean()
-    df['VOL_MA20'] = df['Volume'].rolling(window=20).mean()
+    df['ATR14'] = df['TR'].rolling(window=14).mean()
+    df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     
-    lookback = min(len(df) - 5, 120)
-    subset = df.iloc[-lookback:].copy()
+    latest_close = df['Close'].iloc[-1]
+    latest_atr = df['ATR14'].iloc[-1] if not np.isnan(df['ATR14'].iloc[-1]) else (latest_close * 0.005)
+    
+    # 确定最终使用的 ATR 倍数
+    suggested_mult = get_suggested_atr_mult(ticker, latest_atr, latest_close)
+    used_mult = suggested_mult if "自动" in mode else manual_mult
+    
+    # 局部 40 根 1H K 线寻找局部高低拐点 (约 5-6 个交易日)
+    subset = df.iloc[-40:].copy()
     highs = subset['High'].values
     lows = subset['Low'].values
     
@@ -161,74 +185,33 @@ def calculate_grimes_levels(df):
         if lows[i] == min(lows[i-2:i+3]):
             pivot_lows.append(lows[i])
             
-    latest_atr = df['ATR20'].iloc[-1]
-    latest_close = df['Close'].iloc[-1]
+    upper_pivots = [p for p in pivot_highs if p > latest_close]
+    sbr_base = min(upper_pivots) if upper_pivots else (latest_close + 1.2 * latest_atr)
     
-    if len(df) >= 2:
-        pdh_val = round(float(df['High'].iloc[-2]), 2)
-        pdl_val = round(float(df['Low'].iloc[-2]), 2)
-    else:
-        pdh_val = round(float(df['High'].iloc[-1]), 2)
-        pdl_val = round(float(df['Low'].iloc[-1]), 2)
-        
-    pmh_val = round(float(latest_close + 0.5 * latest_atr), 2)
-    pml_val = round(float(latest_close - 0.5 * latest_atr), 2)
+    lower_pivots = [p for p in pivot_lows if p < latest_close]
+    rbs_base = max(lower_pivots) if lower_pivots else (latest_close - 1.2 * latest_atr)
     
-    if pivot_highs:
-        major_high = max(pivot_highs)
-    else:
-        major_high = df['High'].iloc[-60:].max()
-        
-    sbr_top = round(float(major_high + 0.50 * latest_atr), 2)
-    sbr_bot = round(float(major_high - 1.50 * latest_atr), 2)
+    # 战区厚度按选定/建议倍数计算
+    half_band = used_mult * latest_atr
+    sbr_top = round(float(sbr_base + half_band), 2)
+    sbr_bot = round(float(sbr_base - half_band), 2)
+    rbs_top = round(float(rbs_base + half_band), 2)
+    rbs_bot = round(float(rbs_base - half_band), 2)
     
-    if pivot_lows:
-        major_low = min(pivot_lows[-3:]) if len(pivot_lows) >= 3 else min(pivot_lows)
-    else:
-        major_low = df['Low'].iloc[-60:].min()
-        
-    rbs_top = round(float(major_low + 1.50 * latest_atr), 2)
-    rbs_bot = round(float(major_low - 0.50 * latest_atr), 2)
+    # 提取昨日与盘前极值
+    pdh_val = round(float(subset['High'].iloc[-14:-7].max()), 2) if len(subset) >= 14 else round(float(subset['High'].max()), 2)
+    pdl_val = round(float(subset['Low'].iloc[-14:-7].min()), 2) if len(subset) >= 14 else round(float(subset['Low'].min()), 2)
+    pmh_val = round(float(subset['High'].iloc[-4:].max()), 2)
+    pml_val = round(float(subset['Low'].iloc[-4:].min()), 2)
     
-    latest_vol = df['Volume'].iloc[-1]
-    latest_vol_ma = df['VOL_MA20'].iloc[-1]
-    rvol = round(float(latest_vol / latest_vol_ma), 2) if latest_vol_ma > 0 else 1.0
+    trend_bias = 1 if latest_close > df['EMA20'].iloc[-1] else -1
     
-    prev_close = df['Close'].iloc[-2]
-    latest_open = df['Open'].iloc[-1]
-    latest_ema20 = df['EMA20'].iloc[-1]
-    latest_lwma200 = df['LWMA200'].iloc[-1]
-    
-    trend_bias = 1 if (not np.isnan(latest_lwma200) and latest_close > latest_lwma200) else -1
-    
-    in_rbs = (df['Low'].iloc[-5:].min() <= rbs_top) and (latest_close >= rbs_bot)
-    reclaimed_ema = (latest_close > latest_ema20) and (prev_close <= df['EMA20'].iloc[-2])
-    is_bull = latest_close > latest_open
-    
-    if in_rbs and reclaimed_ema and is_bull and rvol >= 1.15:
-        status = "🟢 BUY TRIGGER"
-    elif in_rbs:
-        status = "🟡 IN RBS ZONE"
-    elif latest_close >= sbr_bot:
-        status = "🔴 SBR HARVEST"
-    else:
-        status = "⚪ NEUTRAL"
-        
-    score = 0.0
-    if in_rbs: score += 0.40
-    elif latest_close >= sbr_bot: score -= 0.40
-    
-    if latest_close > latest_ema20: score += 0.35
-    else: score -= 0.35
-    
-    if is_bull and rvol >= 1.15: score += 0.25
-    elif not is_bull and rvol >= 1.15: score -= 0.25
-        
     return {
         "Close": round(float(latest_close), 2),
-        "EMA20": round(float(latest_ema20), 2),
-        "LWMA200": round(float(latest_lwma200), 2) if not np.isnan(latest_lwma200) else 0.0,
+        "EMA20": round(float(df['EMA20'].iloc[-1]), 2),
         "TREND_BIAS": trend_bias,
+        "SUGGESTED_ATR_MULT": suggested_mult,
+        "USED_ATR_MULT": used_mult,
         "SBR_TOP": sbr_top,
         "SBR_BOT": sbr_bot,
         "RBS_TOP": rbs_top,
@@ -237,174 +220,59 @@ def calculate_grimes_levels(df):
         "PDL": pdl_val,
         "PMH": pmh_val,
         "PML": pml_val,
-        "RVOL": rvol,
-        "STATUS": status,
-        "ATR20": round(float(latest_atr), 2),
-        "SCORE": score
+        "ATR14": round(float(latest_atr), 2)
     }
 
 # =====================================================================
-# 6. 主程序邏輯
+# 6. 主程序渲染与一键复制座舱
 # =====================================================================
-st.title("🧭 QQQ & 17 CORE ASSETS - SWING ENGINE")
-st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo + yfinance 雙模引擎 (宏觀寬幅 + 5M 參數聯動版)")
-
-start_date_str = (audit_date - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
+st.title("🧭 QQQ & 17 CORE ASSETS (DYNAMIC ATR ENGINE)")
+st.caption(f"当前模式: **{atr_mode}** | 1H 结构学战区 + 5M 富途 9 行参数联调")
 
 all_data = {}
 source_track = {}
-
-with st.spinner("正在請求全資產量化數據 (雙模容錯已啟動)..."):
+with st.spinner("计算 1H 战区与智能 ATR 中..."):
     for t in tickers:
-        df_stock, src = fetch_market_data(t, start_date_str, TIINGO_TOKEN)
-        if df_stock is not None and len(df_stock) >= 50:
-            all_data[t] = df_stock
+        df_1h, src = fetch_1h_data(t, TIINGO_TOKEN)
+        if df_1h is not None:
+            all_data[t] = df_1h
             source_track[t] = src
 
 results = []
 for t in tickers:
     if t in all_data:
-        res = calculate_grimes_levels(all_data[t])
+        res = calculate_1h_levels(all_data[t], t, atr_mode, manual_atr_mult)
         if res:
             res["TICKER"] = t
-            res["SOURCE"] = source_track.get(t, "Unknown")
+            res["SOURCE"] = source_track.get(t, "1H")
             results.append(res)
 
 if results:
     df_res = pd.DataFrame(results)
     
-    # 6.1 QQQ 幅度預測與市場寬度
-    st.markdown("### 🎯 QQQ 大盤方向、漲跌幅度與目標落地區間")
-    qqq_data = df_res[df_res["TICKER"] == "QQQ"].iloc[0] if "QQQ" in df_res["TICKER"].values else None
-    stock_rows = df_res[df_res["TICKER"] != "QQQ"]
-    
-    if qqq_data is not None and len(stock_rows) > 0:
-        qqq_close = qqq_data["Close"]
-        sbr_target = qqq_data["SBR_BOT"]
-        rbs_target = qqq_data["RBS_TOP"]
-        
-        upside_pts = round(max(sbr_target - qqq_close, 0.0), 2)
-        upside_pct = round((upside_pts / qqq_close) * 100, 2)
-        
-        downside_pts = round(max(qqq_close - rbs_target, 0.0), 2)
-        downside_pct = round((downside_pts / qqq_close) * 100, 2)
-        
-        rr_ratio = round(upside_pct / max(downside_pct, 0.1), 2)
-        
-        avg_score = stock_rows["SCORE"].mean()
-        bull_prob = int(np.clip((avg_score + 1.0) / 2.0 * 100, 5, 95))
-        bear_prob = 100 - bull_prob
-        
-        above_ema_cnt = sum(stock_rows["Close"] > stock_rows["EMA20"])
-        total_stocks = len(stock_rows)
-        breadth_pct = int(above_ema_cnt / total_stocks * 100)
-        divergence = (bull_prob >= 60) and (breadth_pct <= 35)
-        
-        if divergence:
-            rec_cash = "🛑 0% ~ 20% (頂部背離嚴重，強制防守)"
-        elif bull_prob >= 65 and rr_ratio >= 1.5:
-            rec_cash = "🚀 60% ~ 80% (高勝率 + 大空間，全力做多)"
-        elif bull_prob >= 60:
-            rec_cash = "📈 40% ~ 50% (中度多頭，標準底倉)"
-        elif bear_prob >= 65:
-            rec_cash = "🔴 0% ~ 20% (空頭主導，現金為王)"
-        else:
-            rec_cash = "🟡 20% ~ 30% (多空撕裂，輕倉觀望)"
-
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        with col_m1:
-            st.metric("🟢 QQQ 看漲目標區 (SBR)", f"${sbr_target}", f"+{upside_pct}% (+${upside_pts})")
-        with col_m2:
-            st.metric("🔴 QQQ 防守回調區 (RBS)", f"${rbs_target}", f"-{downside_pct}% (-${downside_pts})", delta_color="inverse")
-        with col_m3:
-            st.metric("🧭 預測概率 (多/空)", f"{bull_prob}% 多 / {bear_prob}% 空")
-        with col_m4:
-            st.metric("⚖️ 空間盈虧比 (R:R)", f"1 : {rr_ratio}", f"寬度: {breadth_pct}% 站上均線")
-
-        if divergence:
-            st.error(f"🛑 **【嚴重警報：頂部背離】** 指數偏多，但 17 支權重股僅 {breadth_pct}% 站在 20 EMA 上！隨時面臨瀑布，嚴禁追高！")
-        elif bull_prob >= 65 and rr_ratio >= 1.5:
-            st.success(f"🚀 **【戰術指令：大波段進攻】** 目標 **`${sbr_target}` (+{upside_pct}%)**，支撐 **`${rbs_target}`**。空間比 1:{rr_ratio}。**{rec_cash}**")
-        elif bear_prob >= 65:
-            st.error(f"🔴 **【戰術指令：空頭防守收割】** 預期回調至 **`${rbs_target}` (-{downside_pct}%)**。**{rec_cash}**")
-        else:
-            st.warning(f"🟡 **【戰術指令：多空僵持 / 看著辦】** 上漲 +{upside_pct}% vs 回調 -{downside_pct}%。**{rec_cash}**")
-
-    st.markdown("---")
-
-    # 6.2 全域量化看板
-    st.subheader("📊 17 支核心資產 + QQQ 全域量化看板")
-    cols = ["TICKER", "STATUS", "Close", "EMA20", "RBS_BOT", "RBS_TOP", "SBR_BOT", "SBR_TOP", "PDL", "PDH", "RVOL", "ATR20", "SOURCE"]
-    
-    def highlight_status(val):
-        s = str(val)
-        if "BUY" in s:
-            return "background-color: #1b4332; color: #d8f3dc; font-weight: bold;"
-        elif "RBS" in s:
-            return "background-color: #5c4d00; color: #fff3b0;"
-        elif "SBR" in s:
-            return "background-color: #49111c; color: #ffccd5;"
-        return ""
-
-    styler = df_res[cols].style
-    if hasattr(styler, 'map'):
-        styled_df = styler.map(highlight_status, subset=["STATUS"])
-    else:
-        styled_df = styler.applymap(highlight_status, subset=["STATUS"])
-        
-    st.dataframe(styled_df, use_container_width=True, height=500)
-
-    # 6.3 EXCEL 下載
-    col_dl1, col_dl2 = st.columns([2, 8])
-    with col_dl1:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_res[cols].to_excel(writer, index=False, sheet_name=f"Scan_{audit_date.strftime('%Y%m%d')}")
-        excel_data = output.getvalue()
-        
-        st.download_button(
-            label="📥 下載 EXCEL 完整報告 (.xlsx)",
-            data=excel_data,
-            file_name=f"Market_Swing_Report_{audit_date.strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    # 6.4 富途 5M 參數一鍵複製座艙
-    st.markdown("---")
-    st.subheader("🎯 單股 / QQQ 富途 5M 指標參數複製座艙")
-    
-    selected_stock = st.selectbox("選擇要複製代碼的標的:", tickers, index=0)
+    st.subheader("🎯 5M 执行参数一键复制座舱")
+    selected_stock = st.selectbox("选择标的:", tickers, index=0)
     stock_data = df_res[df_res["TICKER"] == selected_stock].iloc[0]
     
     col_c1, col_c2 = st.columns([1, 1])
     with col_c1:
-        st.markdown(f"#### 【{selected_stock}】 結構數據")
-        st.markdown(f"* **狀態:** `{stock_data['STATUS']}`")
-        st.markdown(f"* **數據源:** `{stock_data['SOURCE']}`")
-        st.markdown(f"* **最新價:** `${stock_data['Close']}` | **20 EMA:** `${stock_data['EMA20']}`")
-        st.markdown(f"* **🟢 底部 RBS 箱體:** `${stock_data['RBS_BOT']} ~ ${stock_data['RBS_TOP']}`")
-        st.markdown(f"* **🔴 頂部 SBR 箱體:** `${stock_data['SBR_BOT']} ~ ${stock_data['SBR_TOP']}`")
-        st.markdown(f"* **📌 昨日極值 (PDL / PDH):** `${stock_data['PDL']} ~ ${stock_data['PDH']}`")
-        st.markdown(f"* **RVOL:** `{stock_data['RVOL']}x`")
+        st.markdown(f"#### 【{selected_stock}】 1H 精密战区数据")
+        st.markdown(f"* **最新现价:** `${stock_data['Close']}` | **1H ATR(14):** `${stock_data['ATR14']}`")
+        st.markdown(f"* **⚙️ 战区厚度系数:** 使用 `{stock_data['USED_ATR_MULT']}x ATR` (算法建议: `{stock_data['SUGGESTED_ATR_MULT']}x`)")
+        st.markdown(f"* **🔴 1H SBR 阻力带:** `${stock_data['SBR_BOT']} ~ ${stock_data['SBR_TOP']}`")
+        st.markdown(f"* **🟢 1H RBS 支撑带:** `${stock_data['RBS_BOT']} ~ ${stock_data['RBS_TOP']}`")
+        st.markdown(f"* **📌 昨日极值 (PDL / PDH):** `${stock_data['PDL']} ~ ${stock_data['PDH']}`")
+        st.markdown(f"* **🕒 盘前极值 (PML / PMH):** `${stock_data['PML']} ~ ${stock_data['PMH']}`")
         
     with col_c2:
-        st.markdown("#### 📋 複製到富途 5M 指標頂部 9 行參數 (點擊右上角複製)")
-        futu_code = f"""TREND_BIAS := {int(stock_data['TREND_BIAS'])};       {{ 宏觀偏向: 1=多, -1=空, 0=中立 }}
-SBR_TOP    := {stock_data['SBR_TOP']:.2f};   {{ 1H 阻力頂沿 }}
+        st.markdown("#### 📋 复制到富途 5M 指标顶部的 9 行代码")
+        futu_code = f"""TREND_BIAS := {int(stock_data['TREND_BIAS'])};       {{ 宏观偏向: 1=多, -1=空 }}
+SBR_TOP    := {stock_data['SBR_TOP']:.2f};   {{ 1H 阻力顶沿 }}
 SBR_BOT    := {stock_data['SBR_BOT']:.2f};   {{ 1H 阻力底沿 }}
-RBS_TOP    := {stock_data['RBS_TOP']:.2f};   {{ 1H 支撑頂沿 }}
+RBS_TOP    := {stock_data['RBS_TOP']:.2f};   {{ 1H 支撑顶沿 }}
 RBS_BOT    := {stock_data['RBS_BOT']:.2f};   {{ 1H 支撑底沿 }}
-PDH_LINE   := {stock_data['PDH']:.2f};   {{ 昨日最高價 PDH }}
-PDL_LINE   := {stock_data['PDL']:.2f};   {{ 昨日最低價 PDL }}
-PMH_LINE   := {stock_data['PMH']:.2f};   {{ 盤前最高價 PMH }}
-PML_LINE   := {stock_data['PML']:.2f};   {{ 盤前最低價 PML }}"""
+PDH_LINE   := {stock_data['PDH']:.2f};   {{ 昨日最高价 PDH }}
+PDL_LINE   := {stock_data['PDL']:.2f};   {{ 昨日最低价 PDL }}
+PMH_LINE   := {stock_data['PMH']:.2f};   {{ 盘前最高价 PMH }}
+PML_LINE   := {stock_data['PML']:.2f};   {{ 盘前最低价 PML }}"""
         st.code(futu_code, language="pascal")
-
-    # 6.5 歷史明細
-    with st.expander(f"🔍 查看 {selected_stock} 歷史行情明細"):
-        hist_df = all_data[selected_stock].tail(30).copy()
-        hist_df['EMA20'] = hist_df['Close'].ewm(span=20, adjust=False).mean()
-        st.dataframe(hist_df.round(2).sort_index(ascending=False), use_container_width=True)
-
-else:
-    st.error("⚠️ 未獲取到數據，請點擊左側「清除緩存並強制刷新」重試。")
