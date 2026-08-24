@@ -9,7 +9,7 @@ import streamlit as st
 import yfinance as yf
 
 # =====================================================================
-# 1. 核心凭证与资产池定义
+# 1. 核心凭证与配置
 # =====================================================================
 TIINGO_TOKEN = "bcffe3a5cf7eeef085e405cfa4a3e5691b976217"
 
@@ -54,33 +54,7 @@ else:
     c_t3.success("🟢 **美股交易中 / 盘后复盘阶段**")
 
 # =====================================================================
-# 3. 侧边栏与时光机配置
-# =====================================================================
-st.sidebar.title("🎛️ CONTROL CENTER")
-st.sidebar.success("🛡️ 双模容错引擎 (Tiingo + yfinance)")
-
-tickers_input = st.sidebar.text_area(
-    "监控资产池 (QQQ + 17 核心标的)",
-    value=", ".join(ALL_TICKERS),
-    height=100
-)
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("⏳ PASS RECORD (历史时光机)")
-audit_date = st.sidebar.date_input(
-    "选择基准复盘日期",
-    value=datetime.date.today(),
-    max_value=datetime.date.today()
-)
-
-btn_clear = st.sidebar.button("🧹 清除缓存并强制刷新", type="secondary")
-if btn_clear:
-    st.cache_data.clear()
-    st.rerun()
-
-# =====================================================================
-# 4. 双模高可靠数据抓取引擎 (Tiingo 优先，429 自动无缝切换 yfinance)
+# 3. 双模数据抓取引擎
 # =====================================================================
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_complete_data_audited(ticker, token):
@@ -88,14 +62,13 @@ def fetch_complete_data_audited(ticker, token):
     source_1h = "None"
     start_date = (datetime.datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d")
     
-    # 4.1 优先请求 Tiingo 1H
     url = f"https://api.tiingo.com/iex/{ticker}/prices?startDate={start_date}&resampleFreq=1hour&token={token}&columns=open,high,low,close,volume"
     headers = {'Content-Type': 'application/json'}
     try:
         resp = requests.get(url, headers=headers, timeout=6)
         if resp.status_code == 200:
             data = resp.json()
-            if data and isinstance(data, list) and len(data) >= 30:
+            if data and isinstance(data, list) and len(data) >= 25:
                 df_t = pd.DataFrame(data)
                 df_t['date'] = pd.to_datetime(df_t['date'])
                 df_t.set_index('date', inplace=True)
@@ -106,7 +79,6 @@ def fetch_complete_data_audited(ticker, token):
     except Exception:
         pass
 
-    # 4.2 兜底请求 yfinance 1H
     if df_1h is None:
         try:
             df_yf = yf.download(ticker, period="1mo", interval="1h", prepost=True, progress=False)
@@ -119,7 +91,6 @@ def fetch_complete_data_audited(ticker, token):
         except Exception:
             pass
 
-    # 4.3 请求 yfinance 5M 实时盘前
     df_5m = None
     source_5m = "None"
     try:
@@ -136,10 +107,10 @@ def fetch_complete_data_audited(ticker, token):
     return df_1h, source_1h, df_5m, source_5m
 
 # =====================================================================
-# 5. 三维共振算法与结构计算核心
+# 4. 三维共振算法与战术点位解析
 # =====================================================================
 def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
-    if df_1h is None or len(df_1h) < 25:
+    if df_1h is None or len(df_1h) < 20:
         return None
     
     today_ny = datetime.datetime.now(tz_ny).date()
@@ -177,7 +148,7 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
         pmh_time_str, pml_time_str = "Recent 1H", "Recent 1H"
         live_price = float(df_1h['Close'].iloc[-1])
 
-    # 1H 结构带提取
+    # 1H 结构带提取 (Grimes 拐点)
     df_1h_calc = df_1h.copy()
     df_1h_calc['EMA20'] = df_1h_calc['Close'].ewm(span=20, adjust=False).mean()
     df_1h_calc['SMA50'] = df_1h_calc['Close'].rolling(window=50).mean()
@@ -228,14 +199,24 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
     total_score = score_ma + score_hhll + score_slope
     final_bias = 1 if total_score >= 2 else (-1 if total_score <= -2 else 0)
 
-    # 涨跌幅与轮动动作
+    # 涨跌幅与轮动状态
     prev_close = float(df_1h['Close'].iloc[-2])
     chg_pct = (live_price - prev_close) / prev_close * 100
     
-    if live_price >= sbr_bot: action = "🔴 止盈高抛 (Take Profit)"
-    elif live_price <= rbs_top: action = "🟢 支撑轮动 (Rotation In)"
-    elif live_price > ema20_now: action = "📈 多头持仓 (Holding)"
-    else: action = "📉 偏弱观望 (Weak)"
+    # 单股贡献打分 (用于宏观概率)
+    stock_score = 0.0
+    if live_price <= rbs_top:
+        action = "🟢 支撑轮动 (BUY)"
+        stock_score += 0.40
+    elif live_price >= sbr_bot:
+        action = "🔴 止盈高抛 (PROFIT)"
+        stock_score -= 0.40
+    elif live_price > ema20_now:
+        action = "📈 多头持仓 (HOLD)"
+        stock_score += 0.35
+    else:
+        action = "📉 偏弱观望 (WEAK)"
+        stock_score -= 0.35
 
     return {
         "TICKER": ticker,
@@ -245,6 +226,7 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
         "Action": action,
         "TREND_BIAS": final_bias,
         "TOTAL_SCORE": total_score,
+        "STOCK_SCORE": stock_score,
         "EMA20": round(ema20_now, 2),
         "SBR_TOP": round(sbr_top, 2), "SBR_BOT": round(sbr_bot, 2), "SBR_TIME": sbr_time,
         "RBS_TOP": round(rbs_top, 2), "RBS_BOT": round(rbs_bot, 2), "RBS_TIME": rbs_time,
@@ -256,14 +238,14 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
     }
 
 # =====================================================================
-# 6. 主程序渲染与时光机交互
+# 5. 主程序运算与宽屏座舱渲染
 # =====================================================================
-st.title("🧭 QQQ 日内交易座舱 & 17 核心资产轮动雷达")
+st.title("🧭 QQQ 期权决策中枢 & 17 核心股轮动雷达")
 
 results = []
 all_hist_data = {}
-with st.spinner("执行三维共振运算与实时盘前对齐中..."):
-    for t in tickers:
+with st.spinner("扫描 QQQ 与 17 支核心个股宏观量化数据中..."):
+    for t in ALL_TICKERS:
         df_1h, src_1h, df_5m, src_5m = fetch_complete_data_audited(t, TIINGO_TOKEN)
         if df_1h is not None:
             all_hist_data[t] = df_1h
@@ -276,33 +258,79 @@ if results:
     df_stocks = df_res[df_res["TICKER"] != "QQQ"]
     qqq_row = df_res[df_res["TICKER"] == "QQQ"].iloc[0]
 
-    # --- 6.1 顶部战况与市场宽度指标卡 ---
+    # --- 5.1 顶部宏观定调: CALL % vs PUT % 概率计算 ---
+    avg_score = df_stocks["STOCK_SCORE"].mean()
+    call_prob = int(np.clip((avg_score + 1.0) / 2.0 * 100, 5, 95))
+    put_prob = 100 - call_prob
+
     up_cnt = sum(df_stocks["Change%"] > 0)
     down_cnt = sum(df_stocks["Change%"] <= 0)
     mag7_up = sum(df_stocks[df_stocks["Group"] == "Mag 7"]["Change%"] > 0)
     breadth_pct = int(sum(df_stocks["Close"] > df_stocks["EMA20"]) / len(df_stocks) * 100)
+    divergence = (call_prob >= 60) and (breadth_pct <= 35)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("🎯 QQQ 最新现价", f"${qqq_row['Close']}", f"{qqq_row['Change%']}%")
-    m2.metric("📊 17 股多空分布", f"{up_cnt} 涨 / {down_cnt} 跌", f"宽度: {breadth_pct}% > 20EMA")
-    m3.metric("👑 Big 7 巨头动能", f"{mag7_up} / 7 支上涨", "决定 QQQ 真实推力")
-    bias_desc = "🟢 偏多 (CALL)" if qqq_row['TREND_BIAS'] == 1 else ("🔴 偏空 (PUT)" if qqq_row['TREND_BIAS'] == -1 else "⚪ 震荡 (NEUTRAL)")
-    m4.metric("🧭 QQQ 宏观定调", bias_desc, f"共振得分: {qqq_row['TOTAL_SCORE']} / 3")
+    m1.metric("🎯 QQQ 实时点位", f"${qqq_row['Close']}", f"{qqq_row['Change%']}%")
+    m2.metric("🧭 QQQ 宏观定调概率", f"🟢 CALL {call_prob}% vs 🔴 PUT {put_prob}%", f"三维共振: {qqq_row['TOTAL_SCORE']}分")
+    m3.metric("📊 17 股市场宽度", f"{up_cnt} 涨 / {down_cnt} 跌", f"{breadth_pct}% 站上 20EMA")
+    m4.metric("👑 Big 7 权重动能", f"{mag7_up} / 7 支上涨", "指数核心引擎")
+
+    if divergence:
+        st.error(f"🛑 **【严重警报：顶部背离】** QQQ 定调偏多，但 17 支权重股仅 {breadth_pct}% 站在 20 EMA 上！谨防假突破诱多瀑布！")
+    elif call_prob >= 65:
+        st.success(f"🚀 **【战术指令：多头主导 (CALL)】** CALL 胜率 {call_prob}%，全市场宽度良好，开盘重点寻找 5M RBS/PDL 企稳做多机会。")
+    elif put_prob >= 65:
+        st.error(f"🔴 **【战术指令：空头主导 (PUT)】** PUT 胜率 {put_prob}%，大势偏弱，开盘重点寻找 5M SBR/PDH 遇阻做空机会。")
+    else:
+        st.warning(f"🟡 **【战术指令：多空均衡震荡】** CALL {call_prob}% vs PUT {put_prob}%，多空双向均需严格等待 5M 战区形态确认。")
 
     st.markdown("---")
 
-    # --- 6.2 QQQ 专属 9 行参数一键复制区 (置顶固定) ---
-    col_q1, col_q2 = st.columns([1, 1])
-    with col_q1:
-        st.subheader("📋 【QQQ 专属】富途 5M 复制区")
-        st.markdown(f"* **现价通道:** `{qqq_row['SOURCE_5M']}` | **1H 通道:** `{qqq_row['SOURCE_1H']}`")
-        st.markdown(f"* **⚡ 今日盘前极值:** `${qqq_row['PMH']}` ~ `${qqq_row['PML']}` *(时间: `{qqq_row['PMH_TIME']}`)*")
-        st.markdown(f"* **📌 昨日常规极值:** `${qqq_row['PDH']}` ~ `${qqq_row['PDL']}` *(时间: `{qqq_row['PDH_TIME']}`)*")
-        st.markdown(f"* **🔴 1H SBR 阻力区:** `${qqq_row['SBR_BOT']} ~ ${qqq_row['SBR_TOP']}` *(K线: `{qqq_row['SBR_TIME']}`)*")
-        st.markdown(f"* **🟢 1H RBS 支撑区:** `${qqq_row['RBS_BOT']} ~ ${qqq_row['RBS_TOP']}` *(K线: `{qqq_row['RBS_TIME']}`)*")
-    with col_q2:
-        st.markdown("#### 复制到富途 5M 指标顶部 9 行代码")
-        futu_code = f"""TREND_BIAS := {int(qqq_row['TREND_BIAS'])};       {{ 宏观偏向: 1=多, -1=空, 0=中立 [得分: {qqq_row['TOTAL_SCORE']}] }}
+    # --- 5.2 宽屏左右分栏实战座舱 ---
+    col_left, col_right = st.columns([1, 1])
+
+    with col_left:
+        st.subheader("⚡ 今日实战买卖雷达 (谁买 / 谁卖)")
+        
+        # 提取买卖分组
+        buy_list = df_stocks[df_stocks["Action"].str.contains("BUY")]
+        profit_list = df_stocks[df_stocks["Action"].str.contains("PROFIT")]
+        hold_list = df_stocks[~df_stocks["Action"].str.contains("BUY|PROFIT")]
+
+        st.markdown("##### 🟢 【立即轮动买入区 (ROTATION IN)】")
+        if not buy_list.empty:
+            for _, r in buy_list.iterrows():
+                st.markdown(f"* **`{r['TICKER']}`** : `${r['Close']}` ({r['Change%']}%) $\\rightarrow$ **踩入 1H RBS 支撑带** (`${r['RBS_BOT']} ~ ${r['RBS_TOP']}`)")
+            st.caption("💡 *动作：QQQ 期权获利资金，优先定投加仓以上触及支撑的个股。*")
+        else:
+            st.info("暂无踩入 RBS 支撑带的个股（暂不追高加仓）")
+
+        st.markdown("##### 🔴 【立即止盈高抛区 (TAKE PROFIT)】")
+        if not profit_list.empty:
+            for _, r in profit_list.iterrows():
+                st.markdown(f"* **`{r['TICKER']}`** : `${r['Close']}` (+{r['Change%']}%) $\\rightarrow$ **冲入 1H SBR 阻力带** (`${r['SBR_BOT']} ~ ${r['SBR_TOP']}`)")
+            st.caption("💡 *动作：原有正股多头仓位建议在此分批止盈收回现金。*")
+        else:
+            st.info("暂无冲入 SBR 阻力带的个股（继续持股待涨）")
+
+        st.markdown("##### ⚪ 【待命中立区 (HOLDING)】")
+        st.markdown(f"**持仓运行中 ({len(hold_list)} 支):** " + ", ".join([f"`{t}`" for t in hold_list["TICKER"].tolist()]))
+        
+        st.markdown("---")
+        btn_refresh = st.button("🧹 清除缓存并强制刷新全域数据", type="secondary", use_container_width=True)
+        if btn_refresh:
+            st.cache_data.clear()
+            st.rerun()
+
+    with col_right:
+        st.subheader("📋 【QQQ 专属】富途 5M 复制座舱")
+        st.markdown(f"* **现价:** `${qqq_row['Close']}` *(通道: `{qqq_row['SOURCE_5M']}`)*")
+        st.markdown(f"* **⚡ 盘前极值:** `${qqq_row['PMH']}` (PMH) ~ `${qqq_row['PML']}` (PML) `[{qqq_row['PMH_TIME']}]`")
+        st.markdown(f"* **📌 昨日极值:** `${qqq_row['PDH']}` (PDH) ~ `${qqq_row['PDL']}` (PDL) `[{qqq_row['PDH_TIME']}]`")
+        st.markdown(f"* **🔴 1H SBR 阻力带:** `${qqq_row['SBR_BOT']} ~ ${qqq_row['SBR_TOP']}` `[{qqq_row['SBR_TIME']}]`")
+        st.markdown(f"* **🟢 1H RBS 支撑带:** `${qqq_row['RBS_BOT']} ~ ${qqq_row['RBS_TOP']}` `[{qqq_row['RBS_TIME']}]`")
+        
+        futu_code = f"""TREND_BIAS := {int(qqq_row['TREND_BIAS'])};       {{ 宏观: CALL {call_prob}% vs PUT {put_prob}% [得分: {qqq_row['TOTAL_SCORE']}] }}
 SBR_TOP    := {qqq_row['SBR_TOP']:.2f};   {{ 1H 阻力顶沿 [{qqq_row['SBR_TIME']}] }}
 SBR_BOT    := {qqq_row['SBR_BOT']:.2f};   {{ 1H 阻力底沿 [{qqq_row['SBR_TIME']}] }}
 RBS_TOP    := {qqq_row['RBS_TOP']:.2f};   {{ 1H 支撑顶沿 [{qqq_row['RBS_TIME']}] }}
@@ -313,15 +341,14 @@ PMH_LINE   := {qqq_row['PMH']:.2f};   {{ 盘前最高价 PMH [{qqq_row['PMH_TIME
 PML_LINE   := {qqq_row['PML']:.2f};   {{ 盘前最低价 PML [{qqq_row['PML_TIME']}] }}"""
         st.code(futu_code, language="pascal")
 
+    # --- 5.3 底部全量看板与 Excel 导出 ---
     st.markdown("---")
-
-    # --- 6.3 17 股轮动与止盈看板 ---
-    st.subheader("🗺️ 17 支核心个股全景雷达 (轮动与止盈监控)")
+    st.subheader("🗺️ 17 支核心个股全景数据看板 (按涨跌幅排序)")
     
     def highlight_action(val):
-        if "止盈" in str(val):
+        if "PROFIT" in str(val) or "止盈" in str(val):
             return "background-color: #49111c; color: #ffccd5; font-weight: bold;"
-        elif "轮动" in str(val):
+        elif "BUY" in str(val) or "轮动" in str(val):
             return "background-color: #1b4332; color: #d8f3dc; font-weight: bold;"
         return ""
 
@@ -331,27 +358,17 @@ PML_LINE   := {qqq_row['PML']:.2f};   {{ 盘前最低价 PML [{qqq_row['PML_TIME
         styled_df = styler.map(highlight_action, subset=["Action"])
     else:
         styled_df = styler.applymap(highlight_action, subset=["Action"])
-    st.dataframe(styled_df, use_container_width=True, height=480)
+    st.dataframe(styled_df, use_container_width=True, height=450)
 
-    # --- 6.4 历史时光机明细与导出 (Pass Record) ---
-    st.markdown("---")
-    st.subheader("⏳ 历史复盘时光机与数据导出 (Pass Record)")
-    
-    col_p1, col_p2 = st.columns([2, 8])
-    with col_p1:
+    # 导出报表
+    col_dl1, col_dl2 = st.columns([2, 8])
+    with col_dl1:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_res.to_excel(writer, index=False, sheet_name="Market_Report")
         st.download_button(
             label="📥 导出今日全量复盘报表 (.xlsx)",
             data=output.getvalue(),
-            file_name=f"QQQ_Portfolio_Report_{audit_date.strftime('%Y%m%d')}.xlsx",
+            file_name=f"QQQ_Portfolio_Report_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-    
-    with st.expander("🔍 展开查看 QQQ 与 17 股近 6 个交易日 1H 历史 K 线明细"):
-        inspect_ticker = st.selectbox("选择复盘标的:", ALL_TICKERS, index=0)
-        if inspect_ticker in all_hist_data:
-            h_df = all_hist_data[inspect_ticker].tail(42).copy() # 约 6 个交易日
-            h_df['EMA20'] = h_df['Close'].ewm(span=20, adjust=False).mean()
-            st.dataframe(h_df.round(2).sort_index(ascending=False), use_container_width=True)
