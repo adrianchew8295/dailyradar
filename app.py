@@ -14,7 +14,7 @@ import yfinance as yf
 TIINGO_TOKEN = "bcffe3a5cf7eeef085e405cfa4a3e5691b976217"
 
 st.set_page_config(
-    page_title="QQQ Engine & 17 Core Portfolio Radar",
+    page_title="QQQ 0DTE Cockpit & 17 Core Portfolio Radar",
     page_icon="🧭",
     layout="wide"
 )
@@ -54,7 +54,7 @@ else:
     c_t3.success("🟢 **美股交易中 / 盘后复盘阶段**")
 
 # =====================================================================
-# 3. 双模数据抓取引擎
+# 3. 双模数据抓取引擎 (Tiingo + yfinance 自动容错)
 # =====================================================================
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_complete_data_audited(ticker, token):
@@ -203,7 +203,6 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
     prev_close = float(df_1h['Close'].iloc[-2])
     chg_pct = (live_price - prev_close) / prev_close * 100
     
-    # 单股贡献打分 (用于宏观概率)
     stock_score = 0.0
     if live_price <= rbs_top:
         action = "🟢 支撑轮动 (BUY)"
@@ -238,13 +237,13 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
     }
 
 # =====================================================================
-# 5. 主程序运算与宽屏座舱渲染
+# 5. 主程序运算与宽屏实战座舱
 # =====================================================================
-st.title("🧭 QQQ 期权决策中枢 & 17 核心股轮动雷达")
+st.title("🧭 QQQ 0DTE 期权决策中枢 & 17 核心股轮动雷达")
 
 results = []
 all_hist_data = {}
-with st.spinner("扫描 QQQ 与 17 支核心个股宏观量化数据中..."):
+with st.spinner("扫描 QQQ 与 17 支核心个股量化数据中..."):
     for t in ALL_TICKERS:
         df_1h, src_1h, df_5m, src_5m = fetch_complete_data_audited(t, TIINGO_TOKEN)
         if df_1h is not None:
@@ -258,7 +257,7 @@ if results:
     df_stocks = df_res[df_res["TICKER"] != "QQQ"]
     qqq_row = df_res[df_res["TICKER"] == "QQQ"].iloc[0]
 
-    # --- 5.1 顶部宏观定调: CALL % vs PUT % 概率计算 ---
+    # --- 5.1 顶部宏观定调: CALL % vs PUT % 概率与仓位指引 ---
     avg_score = df_stocks["STOCK_SCORE"].mean()
     call_prob = int(np.clip((avg_score + 1.0) / 2.0 * 100, 5, 95))
     put_prob = 100 - call_prob
@@ -267,22 +266,25 @@ if results:
     down_cnt = sum(df_stocks["Change%"] <= 0)
     mag7_up = sum(df_stocks[df_stocks["Group"] == "Mag 7"]["Change%"] > 0)
     breadth_pct = int(sum(df_stocks["Close"] > df_stocks["EMA20"]) / len(df_stocks) * 100)
-    divergence = (call_prob >= 60) and (breadth_pct <= 35)
+    
+    # 巨头出货背离判定
+    big7_divergence = (call_prob >= 60) and (mag7_up <= 2)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("🎯 QQQ 实时点位", f"${qqq_row['Close']}", f"{qqq_row['Change%']}%")
-    m2.metric("🧭 QQQ 宏观定调概率", f"🟢 CALL {call_prob}% vs 🔴 PUT {put_prob}%", f"三维共振: {qqq_row['TOTAL_SCORE']}分")
+    m2.metric("🧭 QQQ 宏观胜率定调", f"🟢 CALL {call_prob}% vs 🔴 PUT {put_prob}%", f"三维共振: {qqq_row['TOTAL_SCORE']}分")
     m3.metric("📊 17 股市场宽度", f"{up_cnt} 涨 / {down_cnt} 跌", f"{breadth_pct}% 站上 20EMA")
-    m4.metric("👑 Big 7 权重动能", f"{mag7_up} / 7 支上涨", "指数核心引擎")
+    m4.metric("👑 Big 7 巨头推力", f"{mag7_up} / 7 支上涨", "指数核心引擎")
 
-    if divergence:
-        st.error(f"🛑 **【严重警报：顶部背离】** QQQ 定调偏多，但 17 支权重股仅 {breadth_pct}% 站在 20 EMA 上！谨防假突破诱多瀑布！")
-    elif call_prob >= 65:
-        st.success(f"🚀 **【战术指令：多头主导 (CALL)】** CALL 胜率 {call_prob}%，全市场宽度良好，开盘重点寻找 5M RBS/PDL 企稳做多机会。")
-    elif put_prob >= 65:
-        st.error(f"🔴 **【战术指令：空头主导 (PUT)】** PUT 胜率 {put_prob}%，大势偏弱，开盘重点寻找 5M SBR/PDH 遇阻做空机会。")
+    # 动态战术横幅与 0DTE 仓位建议
+    if big7_divergence:
+        st.error(f"🛑 **【严重警报：巨头背离出货】** 指数偏多但 Big 7 仅 {mag7_up}/7 支上涨！严禁追高 0DTE CALL，谨防诱多跳水！建议仓位: 0%~20%")
+    elif call_prob >= 70:
+        st.success(f"🚀 **【战术指令：多头主导 (CALL)】** CALL 胜率 {call_prob}%，全市场共振！【0DTE 仓位建议: 60%~70% 重仓顺势】（开盘前 30 分钟仅做 2B 扫损，其余等 Opening Range 走完）。")
+    elif put_prob >= 70:
+        st.error(f"🔴 **【战术指令：空头主导 (PUT)】** PUT 胜率 {put_prob}%，大势偏弱！【0DTE 仓位建议: 60%~70% 重仓顺空】（开盘仅做 PDH/PMH 2B 假突破）。")
     else:
-        st.warning(f"🟡 **【战术指令：多空均衡震荡】** CALL {call_prob}% vs PUT {put_prob}%，多空双向均需严格等待 5M 战区形态确认。")
+        st.warning(f"🟡 **【战术指令：多空均衡震荡】** CALL {call_prob}% vs PUT {put_prob}%！【0DTE 仓位建议: 20%~30% 轻仓防守】（单日 2 笔止损硬熔断生效）。")
 
     st.markdown("---")
 
@@ -292,7 +294,6 @@ if results:
     with col_left:
         st.subheader("⚡ 今日实战买卖雷达 (谁买 / 谁卖)")
         
-        # 提取买卖分组
         buy_list = df_stocks[df_stocks["Action"].str.contains("BUY")]
         profit_list = df_stocks[df_stocks["Action"].str.contains("PROFIT")]
         hold_list = df_stocks[~df_stocks["Action"].str.contains("BUY|PROFIT")]
@@ -301,17 +302,17 @@ if results:
         if not buy_list.empty:
             for _, r in buy_list.iterrows():
                 st.markdown(f"* **`{r['TICKER']}`** : `${r['Close']}` ({r['Change%']}%) $\\rightarrow$ **踩入 1H RBS 支撑带** (`${r['RBS_BOT']} ~ ${r['RBS_TOP']}`)")
-            st.caption("💡 *动作：QQQ 期权获利资金，优先定投加仓以上触及支撑的个股。*")
+            st.caption("💡 *闭环动作：QQQ 0DTE 期权平仓获利后，优先定投加仓以上触及支撑的个股。*")
         else:
-            st.info("暂无踩入 RBS 支撑带的个股（暂不追高加仓）")
+            st.info("暂无踩入 RBS 支撑带的个股（正股暂不追高加仓）")
 
         st.markdown("##### 🔴 【立即止盈高抛区 (TAKE PROFIT)】")
         if not profit_list.empty:
             for _, r in profit_list.iterrows():
                 st.markdown(f"* **`{r['TICKER']}`** : `${r['Close']}` (+{r['Change%']}%) $\\rightarrow$ **冲入 1H SBR 阻力带** (`${r['SBR_BOT']} ~ ${r['SBR_TOP']}`)")
-            st.caption("💡 *动作：原有正股多头仓位建议在此分批止盈收回现金。*")
+            st.caption("💡 *闭环动作：原有正股多头仓位建议在此分批止盈收回现金。*")
         else:
-            st.info("暂无冲入 SBR 阻力带的个股（继续持股待涨）")
+            st.info("暂无冲入 SBR 阻力带的个股（正股继续持股待涨）")
 
         st.markdown("##### ⚪ 【待命中立区 (HOLDING)】")
         st.markdown(f"**持仓运行中 ({len(hold_list)} 支):** " + ", ".join([f"`{t}`" for t in hold_list["TICKER"].tolist()]))
@@ -325,8 +326,8 @@ if results:
     with col_right:
         st.subheader("📋 【QQQ 专属】富途 5M 复制座舱")
         st.markdown(f"* **现价:** `${qqq_row['Close']}` *(通道: `{qqq_row['SOURCE_5M']}`)*")
-        st.markdown(f"* **⚡ 盘前极值:** `${qqq_row['PMH']}` (PMH) ~ `${qqq_row['PML']}` (PML) `[{qqq_row['PMH_TIME']}]`")
-        st.markdown(f"* **📌 昨日极值:** `${qqq_row['PDH']}` (PDH) ~ `${qqq_row['PDL']}` (PDL) `[{qqq_row['PDH_TIME']}]`")
+        st.markdown(f"* **⚡ 盘前极值 (扫损线):** `${qqq_row['PMH']}` (PMH) ~ `${qqq_row['PML']}` (PML) `[{qqq_row['PMH_TIME']}]`")
+        st.markdown(f"* **📌 昨日极值 (扫损线):** `${qqq_row['PDH']}` (PDH) ~ `${qqq_row['PDL']}` (PDL) `[{qqq_row['PDH_TIME']}]`")
         st.markdown(f"* **🔴 1H SBR 阻力带:** `${qqq_row['SBR_BOT']} ~ ${qqq_row['SBR_TOP']}` `[{qqq_row['SBR_TIME']}]`")
         st.markdown(f"* **🟢 1H RBS 支撑带:** `${qqq_row['RBS_BOT']} ~ ${qqq_row['RBS_TOP']}` `[{qqq_row['RBS_TIME']}]`")
         
