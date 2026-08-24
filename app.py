@@ -6,6 +6,7 @@ import pandas as pd
 import pytz
 import requests
 import streamlit as st
+import yfinance as yf
 
 # =====================================================================
 # 1. 核心憑證與資產配置
@@ -58,7 +59,7 @@ else:
 # 3. 側邊欄配置
 # =====================================================================
 st.sidebar.title("🎛️ CONTROL CENTER")
-st.sidebar.success("🔑 Tiingo API 連線就緒")
+st.sidebar.success("🛡️ 雙模數據引擎就緒 (Tiingo + yfinance)")
 
 tickers_input = st.sidebar.text_area(
     "監控資產池 (QQQ + 17 核心標的)",
@@ -83,45 +84,51 @@ if btn_clear:
 scan_btn = st.sidebar.button("🚀 執行全域掃描 (RUN SCAN)", type="primary")
 
 # =====================================================================
-# 4. Tiingo 數據抓取引擎 (雙重鑒權 + 嚴禁緩存失敗數據)
+# 4. 雙模數據抓取引擎 (Tiingo 優先，429 自動切換 yfinance)
 # =====================================================================
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_tiingo_data(ticker, start_str, token):
+def fetch_market_data(ticker, start_str, token):
+    # 第一步: 嘗試 Tiingo
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices?startDate={start_str}&token={token}"
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Token {token}'
-    }
+    headers = {'Content-Type': 'application/json'}
     try:
-        response = requests.get(url, headers=headers, timeout=12)
+        response = requests.get(url, headers=headers, timeout=8)
         if response.status_code == 200:
             data = response.json()
-            if not data or (isinstance(data, dict) and "detail" in data):
-                return None, "Empty/Invalid Data"
-            df = pd.DataFrame(data)
-            if df.empty or 'date' not in df.columns:
-                return None, "No Date Column"
-            df['date'] = pd.to_datetime(df['date'])
-            df.set_index('date', inplace=True)
-            df.rename(columns={
-                'open': 'Open',
-                'high': 'High',
-                'low': 'Low',
-                'close': 'Close',
-                'volume': 'Volume'
-            }, inplace=True)
-            return df[['Open', 'High', 'Low', 'Close', 'Volume']].sort_index(), "OK"
-        else:
-            return None, f"HTTP {response.status_code}: {response.text}"
-    except Exception as e:
-        return None, str(e)
+            if data and isinstance(data, list) and len(data) > 0:
+                df = pd.DataFrame(data)
+                if 'date' in df.columns and not df.empty:
+                    df['date'] = pd.to_datetime(df['date'])
+                    df.set_index('date', inplace=True)
+                    df.rename(columns={
+                        'open': 'Open', 'high': 'High', 'low': 'Low',
+                        'close': 'Close', 'volume': 'Volume'
+                    }, inplace=True)
+                    return df[['Open', 'High', 'Low', 'Close', 'Volume']].sort_index(), "Tiingo"
+    except Exception:
+        pass
+
+    # 第二步: Tiingo 失敗或限流 429 時，自動無縫切換 yfinance
+    try:
+        df_yf = yf.download(ticker, start=start_str, progress=False)
+        if df_yf is not None and not df_yf.empty:
+            if isinstance(df_yf.columns, pd.MultiIndex):
+                df_yf.columns = df_yf.columns.get_level_values(0)
+            df_yf = df_yf[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+            df_yf.index = pd.to_datetime(df_yf.index)
+            if len(df_yf) >= 30:
+                return df_yf.sort_index(), "YahooFinance(容錯兜底)"
+    except Exception:
+        pass
+
+    return None, "All Sources Failed"
 
 def calculate_lwma(series: pd.Series, period: int) -> pd.Series:
     weights = np.arange(1, period + 1)
     return series.rolling(period).apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
 
 # =====================================================================
-# 5. Adam Grimes 宏觀雙箱體核心計算
+# 5. Adam Grimes 宏觀雙箱體與 5M 對接核心
 # =====================================================================
 def calculate_grimes_levels(df):
     if len(df) < 50:
@@ -240,20 +247,19 @@ def calculate_grimes_levels(df):
 # 6. 主程序邏輯
 # =====================================================================
 st.title("🧭 QQQ & 17 CORE ASSETS - SWING ENGINE")
-st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo Official API (宏觀寬幅 + 5M 參數聯動版)")
+st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo + yfinance 雙模引擎 (宏觀寬幅 + 5M 參數聯動版)")
 
 start_date_str = (audit_date - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
 
 all_data = {}
-error_logs = {}
+source_track = {}
 
-with st.spinner("正在透過 Tiingo API 請求全資產數據..."):
+with st.spinner("正在請求全資產量化數據 (雙模容錯已啟動)..."):
     for t in tickers:
-        df_stock, err_msg = fetch_tiingo_data(t, start_date_str, TIINGO_TOKEN)
+        df_stock, src = fetch_market_data(t, start_date_str, TIINGO_TOKEN)
         if df_stock is not None and len(df_stock) >= 50:
             all_data[t] = df_stock
-        else:
-            error_logs[t] = err_msg
+            source_track[t] = src
 
 results = []
 for t in tickers:
@@ -261,6 +267,7 @@ for t in tickers:
         res = calculate_grimes_levels(all_data[t])
         if res:
             res["TICKER"] = t
+            res["SOURCE"] = source_track.get(t, "Unknown")
             results.append(res)
 
 if results:
@@ -327,7 +334,7 @@ if results:
 
     # 6.2 全域量化看板
     st.subheader("📊 17 支核心資產 + QQQ 全域量化看板")
-    cols = ["TICKER", "STATUS", "Close", "EMA20", "RBS_BOT", "RBS_TOP", "SBR_BOT", "SBR_TOP", "PDL", "PDH", "RVOL", "ATR20"]
+    cols = ["TICKER", "STATUS", "Close", "EMA20", "RBS_BOT", "RBS_TOP", "SBR_BOT", "SBR_TOP", "PDL", "PDH", "RVOL", "ATR20", "SOURCE"]
     
     def highlight_status(val):
         s = str(val)
@@ -358,7 +365,7 @@ if results:
         st.download_button(
             label="📥 下載 EXCEL 完整報告 (.xlsx)",
             data=excel_data,
-            file_name=f"Tiingo_Swing_Report_{audit_date.strftime('%Y%m%d')}.xlsx",
+            file_name=f"Market_Swing_Report_{audit_date.strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
@@ -373,6 +380,7 @@ if results:
     with col_c1:
         st.markdown(f"#### 【{selected_stock}】 結構數據")
         st.markdown(f"* **狀態:** `{stock_data['STATUS']}`")
+        st.markdown(f"* **數據源:** `{stock_data['SOURCE']}`")
         st.markdown(f"* **最新價:** `${stock_data['Close']}` | **20 EMA:** `${stock_data['EMA20']}`")
         st.markdown(f"* **🟢 底部 RBS 箱體:** `${stock_data['RBS_BOT']} ~ ${stock_data['RBS_TOP']}`")
         st.markdown(f"* **🔴 頂部 SBR 箱體:** `${stock_data['SBR_BOT']} ~ ${stock_data['SBR_TOP']}`")
@@ -399,5 +407,4 @@ PML_LINE   := {stock_data['PML']:.2f};   {{ 盤前最低價 PML }}"""
         st.dataframe(hist_df.round(2).sort_index(ascending=False), use_container_width=True)
 
 else:
-    st.error("⚠️ 未獲取到數據，請查看下方具體錯誤原因，或點擊左側「清除緩存並強制刷新」：")
-    st.json(error_logs)
+    st.error("⚠️ 未獲取到數據，請點擊左側「清除緩存並強制刷新」重試。")
