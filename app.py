@@ -8,12 +8,12 @@ import requests
 import streamlit as st
 
 # =====================================================================
-# 1. 核心憑證與資產配置 (已自動綁定 TIINGO TOKEN)
+# 1. 核心憑證與資產配置
 # =====================================================================
 TIINGO_TOKEN = "bcffe3a5cf7eeef085e405cfa4a3e5691b976217"
 
 st.set_page_config(
-    page_title="QQQ & 17 Core Swing Engine (Tiingo)",
+    page_title="QQQ & 17 Core Swing Engine",
     page_icon="🧭",
     layout="wide"
 )
@@ -26,7 +26,7 @@ DEFAULT_TICKERS = [
 ]
 
 # =====================================================================
-# 2. 人性化時間與倒計時引擎 (大馬時間 MYT & 美東時間 ET)
+# 2. 人性化時間與倒計時引擎
 # =====================================================================
 tz_myt = pytz.timezone("Asia/Kuala_Lumpur")
 tz_ny = pytz.timezone("America/New_York")
@@ -37,7 +37,7 @@ now_ny = datetime.datetime.now(tz_ny)
 target_open_ny = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
 if now_ny >= target_open_ny and now_ny.hour >= 16:
     target_open_ny += timedelta(days=1)
-while target_open_ny.weekday() >= 5:  # 跳過週末
+while target_open_ny.weekday() >= 5:
     target_open_ny += timedelta(days=1)
 
 target_open_myt = target_open_ny.astimezone(tz_myt)
@@ -75,24 +75,32 @@ audit_date = st.sidebar.date_input(
     max_value=datetime.date.today()
 )
 
+btn_clear = st.sidebar.button("🧹 清除緩存並強制刷新", type="secondary")
+if btn_clear:
+    st.cache_data.clear()
+    st.rerun()
+
 scan_btn = st.sidebar.button("🚀 執行全域掃描 (RUN SCAN)", type="primary")
 
 # =====================================================================
-# 4. Tiingo 數據抓取引擎 (URL Query 鉴权 + 智能历史回溯)
+# 4. Tiingo 數據抓取引擎 (雙重鑒權 + 嚴禁緩存失敗數據)
 # =====================================================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_tiingo_data(ticker, start_str, token):
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices?startDate={start_str}&token={token}"
-    headers = {'Content-Type': 'application/json'}
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Token {token}'
+    }
     try:
         response = requests.get(url, headers=headers, timeout=12)
         if response.status_code == 200:
             data = response.json()
             if not data or (isinstance(data, dict) and "detail" in data):
-                return None
+                return None, "Empty/Invalid Data"
             df = pd.DataFrame(data)
             if df.empty or 'date' not in df.columns:
-                return None
+                return None, "No Date Column"
             df['date'] = pd.to_datetime(df['date'])
             df.set_index('date', inplace=True)
             df.rename(columns={
@@ -102,19 +110,18 @@ def fetch_tiingo_data(ticker, start_str, token):
                 'close': 'Close',
                 'volume': 'Volume'
             }, inplace=True)
-            return df[['Open', 'High', 'Low', 'Close', 'Volume']].sort_index()
+            return df[['Open', 'High', 'Low', 'Close', 'Volume']].sort_index(), "OK"
         else:
-            return None
-    except Exception:
-        return None
+            return None, f"HTTP {response.status_code}: {response.text}"
+    except Exception as e:
+        return None, str(e)
 
 def calculate_lwma(series: pd.Series, period: int) -> pd.Series:
-    """計算 200 LWMA"""
     weights = np.arange(1, period + 1)
     return series.rolling(period).apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
 
 # =====================================================================
-# 5. Adam Grimes 宏觀寬幅雙箱體與 5M 對接核心
+# 5. Adam Grimes 宏觀雙箱體核心計算
 # =====================================================================
 def calculate_grimes_levels(df):
     if len(df) < 50:
@@ -150,7 +157,6 @@ def calculate_grimes_levels(df):
     latest_atr = df['ATR20'].iloc[-1]
     latest_close = df['Close'].iloc[-1]
     
-    # 昨日極值 (PDH / PDL)
     if len(df) >= 2:
         pdh_val = round(float(df['High'].iloc[-2]), 2)
         pdl_val = round(float(df['Low'].iloc[-2]), 2)
@@ -158,11 +164,9 @@ def calculate_grimes_levels(df):
         pdh_val = round(float(df['High'].iloc[-1]), 2)
         pdl_val = round(float(df['Low'].iloc[-1]), 2)
         
-    # 盤前通道估算 (PMH / PML)
     pmh_val = round(float(latest_close + 0.5 * latest_atr), 2)
     pml_val = round(float(latest_close - 0.5 * latest_atr), 2)
     
-    # 宏觀頂部 SBR 箱體 (厚度約 2.0x ATR)
     if pivot_highs:
         major_high = max(pivot_highs)
     else:
@@ -171,7 +175,6 @@ def calculate_grimes_levels(df):
     sbr_top = round(float(major_high + 0.50 * latest_atr), 2)
     sbr_bot = round(float(major_high - 1.50 * latest_atr), 2)
     
-    # 宏觀底部 RBS 箱體 (厚度約 2.0x ATR)
     if pivot_lows:
         major_low = min(pivot_lows[-3:]) if len(pivot_lows) >= 3 else min(pivot_lows)
     else:
@@ -189,13 +192,8 @@ def calculate_grimes_levels(df):
     latest_ema20 = df['EMA20'].iloc[-1]
     latest_lwma200 = df['LWMA200'].iloc[-1]
     
-    # 宏觀偏向 (TREND_BIAS)
-    if not np.isnan(latest_lwma200):
-        trend_bias = 1 if latest_close > latest_lwma200 else -1
-    else:
-        trend_bias = 0
+    trend_bias = 1 if (not np.isnan(latest_lwma200) and latest_close > latest_lwma200) else -1
     
-    # 狀態機判定
     in_rbs = (df['Low'].iloc[-5:].min() <= rbs_top) and (latest_close >= rbs_bot)
     reclaimed_ema = (latest_close > latest_ema20) and (prev_close <= df['EMA20'].iloc[-2])
     is_bull = latest_close > latest_open
@@ -247,11 +245,15 @@ st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源:
 start_date_str = (audit_date - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
 
 all_data = {}
+error_logs = {}
+
 with st.spinner("正在透過 Tiingo API 請求全資產數據..."):
     for t in tickers:
-        df_stock = fetch_tiingo_data(t, start_date_str, TIINGO_TOKEN)
+        df_stock, err_msg = fetch_tiingo_data(t, start_date_str, TIINGO_TOKEN)
         if df_stock is not None and len(df_stock) >= 50:
             all_data[t] = df_stock
+        else:
+            error_logs[t] = err_msg
 
 results = []
 for t in tickers:
@@ -323,7 +325,7 @@ if results:
 
     st.markdown("---")
 
-    # 6.2 全域量化看板 (兼容新舊版 Pandas 著色)
+    # 6.2 全域量化看板
     st.subheader("📊 17 支核心資產 + QQQ 全域量化看板")
     cols = ["TICKER", "STATUS", "Close", "EMA20", "RBS_BOT", "RBS_TOP", "SBR_BOT", "SBR_TOP", "PDL", "PDH", "RVOL", "ATR20"]
     
@@ -360,7 +362,7 @@ if results:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # 6.4 富途 5M 參數一鍵複製座艙 (完整 9 行對齊)
+    # 6.4 富途 5M 參數一鍵複製座艙
     st.markdown("---")
     st.subheader("🎯 單股 / QQQ 富途 5M 指標參數複製座艙")
     
@@ -397,4 +399,5 @@ PML_LINE   := {stock_data['PML']:.2f};   {{ 盤前最低價 PML }}"""
         st.dataframe(hist_df.round(2).sort_index(ascending=False), use_container_width=True)
 
 else:
-    st.error("⚠️ 未獲取到數據，請檢查網絡連接或確認 Tiingo 配額。")
+    st.error("⚠️ 未獲取到數據，請查看下方具體錯誤原因，或點擊左側「清除緩存並強制刷新」：")
+    st.json(error_logs)
