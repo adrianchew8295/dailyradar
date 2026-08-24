@@ -78,27 +78,21 @@ audit_date = st.sidebar.date_input(
 scan_btn = st.sidebar.button("🚀 執行全域掃描 (RUN SCAN)", type="primary")
 
 # =====================================================================
-# 4. Tiingo 數據抓取引擎
+# 4. Tiingo 數據抓取引擎 (URL Query 鉴权 + 智能历史回溯)
 # =====================================================================
 @st.cache_data(ttl=3600)
-def fetch_tiingo_data(ticker, start_str, end_str, token):
-    url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Token {token}'
-    }
-    params = {
-        'startDate': start_str,
-        'endDate': end_str,
-        'format': 'json'
-    }
+def fetch_tiingo_data(ticker, start_str, token):
+    url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices?startDate={start_str}&token={token}"
+    headers = {'Content-Type': 'application/json'}
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.get(url, headers=headers, timeout=12)
         if response.status_code == 200:
             data = response.json()
-            if not data:
+            if not data or (isinstance(data, dict) and "detail" in data):
                 return None
             df = pd.DataFrame(data)
+            if df.empty or 'date' not in df.columns:
+                return None
             df['date'] = pd.to_datetime(df['date'])
             df.set_index('date', inplace=True)
             df.rename(columns={
@@ -251,12 +245,11 @@ st.title("🧭 QQQ & 17 CORE ASSETS - SWING ENGINE")
 st.caption(f"基準計算日: **{audit_date.strftime('%Y-%m-%d')}** | 數據源: Tiingo Official API (宏觀寬幅 + 5M 參數聯動版)")
 
 start_date_str = (audit_date - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
-end_date_str = audit_date.strftime('%Y-%m-%d')
 
 all_data = {}
 with st.spinner("正在透過 Tiingo API 請求全資產數據..."):
     for t in tickers:
-        df_stock = fetch_tiingo_data(t, start_date_str, end_date_str, TIINGO_TOKEN)
+        df_stock = fetch_tiingo_data(t, start_date_str, TIINGO_TOKEN)
         if df_stock is not None and len(df_stock) >= 50:
             all_data[t] = df_stock
 
