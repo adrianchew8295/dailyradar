@@ -9,7 +9,7 @@ import streamlit as st
 import yfinance as yf
 
 # =====================================================================
-# 1. 核心凭证与页面配置 (Title 改为《《癸水(QQQ)》》)
+# 1. 核心凭证与页面配置 (Title: 《《癸水(QQQ)》》)
 # =====================================================================
 TIINGO_TOKEN = "bcffe3a5cf7eeef085e405cfa4a3e5691b976217"
 
@@ -118,7 +118,7 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
     
     today_ny = datetime.datetime.now(tz_ny).date()
     
-    # 昨日 RTH 极值 (09:30 - 16:00 ET) - Reference: Grimes (2012)
+    # 昨日 RTH 极值 (09:30 - 16:00 ET)
     df_rth = df_1h[(df_1h.index.hour > 9) | ((df_1h.index.hour == 9) & (df_1h.index.minute >= 30))]
     df_rth = df_rth[df_rth.index.hour < 16]
     past_dates = sorted(list(set(df_rth.index.date)))
@@ -133,7 +133,7 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
         pdh_val, pdl_val = float(df_1h['High'].iloc[-10:].max()), float(df_1h['Low'].iloc[-10:].min())
         pdh_time_str, pdl_time_str = "Prior Session", "Prior Session"
 
-    # 今日盘前极值 (04:00 - 09:30 ET) - Reference: Weis (2013)
+    # 今日盘前极值 (04:00 - 09:30 ET)
     if df_5m is not None:
         today_pm = df_5m[(df_5m.index.date == today_ny) & (df_5m.index.hour >= 4) & ((df_5m.index.hour < 9) | ((df_5m.index.hour == 9) & (df_5m.index.minute < 30)))]
         if not today_pm.empty:
@@ -151,7 +151,7 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
         pmh_time_str, pml_time_str = "Recent 1H", "Recent 1H"
         live_price = float(df_1h['Close'].iloc[-1])
 
-    # 1H 均线与波动率
+    # 1H 均线与 ATR
     df_1h_calc = df_1h.copy()
     df_1h_calc['EMA20'] = df_1h_calc['Close'].ewm(span=20, adjust=False).mean()
     df_1h_calc['SMA50'] = df_1h_calc['Close'].rolling(window=50).mean()
@@ -161,7 +161,7 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
                                (df_1h_calc['Low'] - df_1h_calc['Close'].shift(1)).abs()))
     atr = float(tr.rolling(14).mean().iloc[-1]) if not np.isnan(tr.rolling(14).mean().iloc[-1]) else (live_price * 0.008)
 
-    # 1H Grimes 拐点扫描 (回溯 60 根 1H K 线寻找 Primary 与 Secondary)
+    # 1H Grimes 拐点扫描 (Primary + Secondary)
     subset = df_1h_calc.iloc[-60:].copy()
     highs, lows, opens, closes, times = subset['High'].values, subset['Low'].values, subset['Open'].values, subset['Close'].values, subset.index
     
@@ -172,21 +172,19 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
         if lows[i] == min(lows[i-2:i+3]):
             pivots_low.append((float(min(opens[i], closes[i])), float(lows[i]), times[i].strftime("%m-%d %H:%M ET")))
 
-    # SBR 排序提取 (上方阻力升序排)
+    # SBR 排序
     valid_highs = [p for p in pivots_high if p[1] > live_price]
     valid_highs.sort(key=lambda x: x[1])
-    
     sbr_top, sbr_bot, sbr_time = valid_highs[0] if len(valid_highs) >= 1 else (live_price + 1.2 * atr, live_price + 0.6 * atr, "Range High")
     sbr2_top, sbr2_bot, sbr2_time = valid_highs[1] if len(valid_highs) >= 2 else (sbr_top + 1.2 * atr, sbr_top + 0.5 * atr, "Tier-2 High")
 
-    # RBS 排序提取 (下方支撑降序排)
+    # RBS 排序
     valid_lows = [p for p in pivots_low if p[0] < live_price]
     valid_lows.sort(key=lambda x: x[0], reverse=True)
-    
     rbs_top, rbs_bot, rbs_time = valid_lows[0] if len(valid_lows) >= 1 else (live_price - 0.6 * atr, live_price - 1.2 * atr, "Range Low")
     rbs2_top, rbs2_bot, rbs2_time = valid_lows[1] if len(valid_lows) >= 2 else (rbs_bot - 0.5 * atr, rbs_bot - 1.2 * atr, "Tier-2 Low")
 
-    # 三维共振判决 - Reference: Brooks (2011) & Sperandeo (1991)
+    # 三维共振判决
     ema20_now = float(df_1h_calc['EMA20'].iloc[-1])
     sma50_now = float(df_1h_calc['SMA50'].iloc[-1]) if not np.isnan(df_1h_calc['SMA50'].iloc[-1]) else ema20_now
     score_ma = 1 if (live_price > ema20_now and ema20_now >= sma50_now) else (-1 if (live_price < ema20_now and ema20_now <= sma50_now) else 0)
@@ -204,10 +202,10 @@ def calculate_audited_levels(df_1h, source_1h, df_5m, source_5m, ticker):
     total_score = score_ma + score_hhll + score_slope
     final_bias = 1 if total_score >= 2 else (-1 if total_score <= -2 else 0)
 
-    # 涨跌幅与轮动动作
     prev_close = float(df_1h['Close'].iloc[-2])
     chg_pct = (live_price - prev_close) / prev_close * 100
     
+    # 轮动策略信号判定
     if live_price >= sbr_bot: action = "🔴 止盈高抛 (Take Profit)"
     elif live_price <= rbs_top: action = "🟢 支撑轮动 (Rotation In)"
     elif live_price > ema20_now: action = "📈 多头持仓 (Holding)"
@@ -240,7 +238,7 @@ st.title("🌊 《《癸水(QQQ)》》 0DTE 期权中枢 & 17 核心股轮动雷
 
 results = []
 all_hist_data = {}
-with st.spinner("执行双梯队战区运算与实时盘前对齐中..."):
+with st.spinner("执行双梯队战区运算与 17 股轮动扫描中..."):
     for t in ALL_TICKERS:
         df_1h, src_1h, df_5m, src_5m = fetch_complete_data_audited(t, TIINGO_TOKEN)
         if df_1h is not None:
@@ -269,9 +267,36 @@ if results:
 
     st.markdown("---")
 
-    # --- 5.2 QQQ 专属 13 行参数一键复制区 (格式 100% 物理对齐富途指标) ---
-    col_q1, col_q2 = st.columns([1, 1.2])
-    with col_q1:
+    # --- 5.2 核心左右双栏：左侧【买卖哪只股】 vs 右侧【QQQ 13 行参数复制】 ---
+    col_left, col_right = st.columns([1, 1.2])
+    
+    with col_left:
+        st.subheader("⚡ 【今日实战买卖雷达】(轮动加仓 & 止盈)")
+        
+        # 筛选买卖标的
+        buy_list = df_stocks[df_stocks["Action"].str.contains("轮动")]
+        profit_list = df_stocks[df_stocks["Action"].str.contains("止盈")]
+        holding_list = df_stocks[df_stocks["Action"].str.contains("持仓")]
+        
+        st.markdown("#### 🟢 立即轮动买入区 (ROTATION IN)")
+        if not buy_list.empty:
+            for _, r in buy_list.iterrows():
+                st.success(f"**{r['TICKER']}** (${r['Close']}, {r['Change%']}%) ➔ 踩入 1H RBS 支撑带 (`${r['RBS_BOT']} ~ ${r['RBS_TOP']}`)\n\n*📌 建议：QQQ 期权盈利资金，优先分批定投买入*")
+        else:
+            st.info("暂无个股踩入 1H RBS 支撑位（无错杀低吸点）")
+
+        st.markdown("#### 🔴 立即止盈高抛区 (TAKE PROFIT)")
+        if not profit_list.empty:
+            for _, r in profit_list.iterrows():
+                st.error(f"**{r['TICKER']}** (${r['Close']}, +{r['Change%']}%) ➔ 刺入 1H SBR 阻力带 (`${r['SBR_BOT']} ~ ${r['SBR_TOP']}`)\n\n*📌 建议：正股底仓分批止盈高抛，收回现金*")
+        else:
+            st.info("暂无个股触及 1H SBR 阻力位（持仓继续奔跑）")
+
+        st.markdown("#### ⚪ 顺势持仓待命区 (HOLDING)")
+        hold_str = ", ".join([f"**{r['TICKER']}**({r['Change']}%)" for _, r in holding_list.iterrows()]) if not holding_list.empty else "无"
+        st.caption(f"处于 20 EMA 上方顺势运行: {hold_str}")
+
+    with col_right:
         st.subheader("📋 【QQQ 专属】富途 5M 复制座舱")
         st.markdown(f"* **现价通道:** `{qqq_row['SOURCE_5M']}` | **1H 通道:** `{qqq_row['SOURCE_1H']}`")
         st.markdown(f"* **⚡ 今日盘前极值:** `${qqq_row['PMH']}` ~ `${qqq_row['PML']}` *(时间: `{qqq_row['PMH_TIME']}`)*")
@@ -280,9 +305,8 @@ if results:
         st.markdown(f"* **🟢 Primary RBS 支撑:** `${qqq_row['RBS_BOT']} ~ ${qqq_row['RBS_TOP']}` *(K线: `{qqq_row['RBS_TIME']}`)*")
         st.markdown(f"* **🔴 Secondary SBR2:** `${qqq_row['SBR2_BOT']} ~ ${qqq_row['SBR2_TOP']}` *(K线: `{qqq_row['SBR2_TIME']}`)*")
         st.markdown(f"* **🟢 Secondary RBS2:** `${qqq_row['RBS2_BOT']} ~ ${qqq_row['RBS2_TOP']}` *(K线: `{qqq_row['RBS2_TIME']}`)*")
-    
-    with col_q2:
-        st.markdown("#### 复制到富途指标顶部 13 行代码 (点右上角直接复制):")
+        
+        st.markdown("##### 复制到富途指标顶部 13 行代码 (点右上角直接复制):")
         futu_13_code = f"""TREND_BIAS := {int(qqq_row['TREND_BIAS'])};       {{ 1. 宏观偏向: 1=多, -1=空, 0=中立 [得分: {qqq_row['TOTAL_SCORE']}] }}
 
 {{ --- 第一梯队主战区 (Primary Zones) --- }}
@@ -306,7 +330,7 @@ PML_LINE   := {qqq_row['PML']:.2f};  {{ 13. 盘前最低价 PML [{qqq_row['PML_T
 
     st.markdown("---")
 
-    # --- 5.3 17 股全景轮动雷达 ---
+    # --- 5.3 17 股全景轮动雷达看板 ---
     st.subheader("🗺️ 17 支核心个股全景雷达 (轮动与止盈监控)")
     
     def highlight_action(val):
