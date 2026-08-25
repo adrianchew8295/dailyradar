@@ -293,7 +293,7 @@ if results:
             st.info("暂无个股触及 1H SBR 阻力位（持仓继续奔跑）")
 
         st.markdown("#### ⚪ 顺势持仓待命区 (HOLDING)")
-        hold_str = ", ".join([f"**{r['TICKER']}**({r['Change']}%)" for _, r in holding_list.iterrows()]) if not holding_list.empty else "无"
+        hold_str = ", ".join([f"**{r['TICKER']}**({r['Change%']}%)" for _, r in holding_list.iterrows()]) if not holding_list.empty else "无"
         st.caption(f"处于 20 EMA 上方顺势运行: {hold_str}")
 
     with col_right:
